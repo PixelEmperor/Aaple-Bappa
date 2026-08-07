@@ -1,0 +1,13 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/*
+!.vscode/extensions.json
+.idea
+
+# Python (data-pipeline, once added)
+__pycache__/
+*.pyc
+.venv/
