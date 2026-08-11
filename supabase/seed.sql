@@ -1,0 +1,9 @@
+-- Local dev seed data. Auto-run by `supabase db reset` / `supabase start`.
+--
+-- Moderator seeding (design-plan.md Milestone 1) can't be scripted here:
+-- it needs a real auth.users.id, which only exists after the founder signs
+-- up once via Supabase Auth. After that first login, grab the UID from
+-- Authentication > Users in the Supabase dashboard (or `select id from
+-- auth.users where email = '...'`) and run:
+--
+-- insert into moderators (user_id) values ('<uid-from-first-login>');

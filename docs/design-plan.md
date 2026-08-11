@@ -93,13 +93,22 @@ Tasks:
 **Goal:** schema, indexes, RLS, and storage bucket provisioned via tracked migrations.
 
 Tasks:
-- [ ] `supabase init`; create project (note: free-tier pauses after 7 days idle — see §Risks).
-- [ ] Migration `0001_core_schema.sql` — `mandals`, `submissions`, `helplines`, `moderators`.
+- [x] `supabase init` — scaffolded `/supabase` locally.
+- [ ] Create an actual Supabase project (needs your account; free-tier pauses after 7 days idle — see §Risks).
+- [x] Migration `0001_core_schema.sql` — `mandals`, `submissions`, `helplines`, `moderators`.
       (Omit `crowd_reports` — deferred; add in a Phase-2 migration.)
-- [ ] Migration `0002_indexes.sql` — unique `slug`; b-tree on `area`, `zone`, `submissions(status)`.
-- [ ] Migration `0003_rls.sql` — policies below.
-- [ ] Create Storage bucket `mandal-photos` (public read).
-- [ ] Seed `moderators` with the founder's auth UID after first login.
+- [x] Migration `0002_indexes.sql` — unique `slug`; b-tree on `area`, `zone`, `submissions(status)`.
+- [x] Migration `0003_rls.sql` — policies below.
+- [x] Migration `0004_storage.sql` — creates Storage bucket `mandal-photos` (public read) as a
+      tracked migration rather than a manual dashboard step.
+- [ ] Seed `moderators` with the founder's auth UID after first login (template + instructions in
+      `supabase/seed.sql`; needs a real UID from an actual login, so left for you to run).
+
+> **Note:** these four migrations are written and reviewed but not yet applied to a live database —
+> that needs either Docker (`supabase start`, for local verification) or a real Supabase project
+> (`supabase link` + `supabase db push`), both of which need your setup. Run
+> `supabase db reset` locally or `supabase db push` against your project once one exists, and
+> confirm the acceptance criteria below before treating this milestone as verified.
 
 Key RLS policies (public = `anon` role):
 ```sql
