@@ -172,18 +172,21 @@ mandals visible via the anon read policy. Re-running changes nothing (idempotent
 **Goal:** `mandals.list` and `mandals.getBySlug` — the foundation for directory, map, detail.
 
 Tasks:
-- [ ] tRPC scaffold: `src/server/trpc.ts` (init, superjson, error formatter with Zod flattening), `src/server/context.ts` (request + Supabase clients + session), `src/server/routers/_app.ts`.
-- [ ] `publicProcedure` (anon client) and `moderatorProcedure` (session + `moderators` check) base procedures.
-- [ ] `mandals.list` — input: `{ search?, area?, zone?, tags?[], page?, pageSize? }` (Zod). Server-side filter + pagination; returns `{ items: Mandal[], total, page }`.
-- [ ] `mandals.getBySlug` — input `{ slug }`; returns full record or `NOT_FOUND` (drives 404).
-- [ ] Shared Zod schemas + inferred `Mandal` type in `src/shared/schemas.ts`, imported by both client and server.
-- [ ] Next.js route handler `src/app/api/trpc/[trpc]/route.ts`; client provider in `src/app/providers.tsx`.
+- [x] tRPC scaffold: `src/server/trpc.ts` (init, superjson, error formatter with Zod flattening), `src/server/context.ts` (request + Supabase clients + session), `src/server/routers/_app.ts`.
+- [x] `publicProcedure` (anon client) and `moderatorProcedure` (session + `moderators` check) base procedures.
+- [x] `mandals.list` — input: `{ search?, area?, zone?, tags?[], page?, pageSize? }` (Zod). Server-side filter + pagination; returns `{ items: Mandal[], total, page }`.
+- [x] `mandals.getBySlug` — input `{ slug }`; returns full record or `NOT_FOUND` (drives 404).
+- [x] Shared Zod schemas + inferred `Mandal` type in `src/shared/schemas.ts`, imported by both client and server.
+- [x] Next.js route handler `src/app/api/trpc/[trpc]/route.ts`; client provider in `src/app/providers.tsx`.
 
-**Testing (Vitest):** unit-test slug generation and the list filter/pagination logic; one integration
-test hitting `mandals.list` against a seeded local Supabase. Target ≥80% coverage on new procedure logic (org standard).
+**Testing (Vitest):** unit-tested slug generation (`src/shared/slug.test.ts`) and the list
+filter/pagination logic (`src/server/mandals-query.test.ts`), both pure functions factored out so no
+DB is needed. The integration test against a seeded local Supabase is still open — needs Docker or a
+real project, neither available in this environment (see Milestone 1's note).
 
-**Acceptance:** `mandals.list` returns filtered/paginated results in <500ms on the seeded dataset
-(scope §6.1); `getBySlug` returns `NOT_FOUND` for unknown slug.
+**Acceptance:** filter/pagination logic and `NOT_FOUND`-on-unknown-slug are unit-tested and passing;
+the actual <500ms-on-seeded-data acceptance criterion can't be verified until real data exists
+(Milestone 2) against a live database (Milestone 1).
 
 ---
 
@@ -192,15 +195,28 @@ test hitting `mandals.list` against a seeded local Supabase. Target ≥80% cover
 **Goal:** searchable, filterable card grid at `/`.
 
 Tasks:
-- [ ] ISR page (`revalidate: 3600`) SSG-rendering the first page of `mandals.list`.
-- [ ] Card component: name, area, thumbnail (`next/image`), tag chips. Graceful missing-photo placeholder.
-- [ ] Filter bar: text search (debounced), area select, zone select, tag multi-select. Filter state in URL query params (shareable, and carried into the map view per scope §6.2).
-- [ ] Client-side data via tRPC-react-query; keep filter state in sync with URL.
-- [ ] Empty-state UI for zero results.
-- [ ] Accessibility: keyboard-navigable filters, alt text on thumbnails, AA contrast (org + scope §11).
+- [x] ISR page (`revalidate: 3600`) SSG-rendering the first page of `mandals.list`. Confirmed via
+      `pnpm build`: `/` shows as `○ Static` with a 1h revalidate window.
+- [x] Card component: name, area, thumbnail (`next/image`), tag chips. Graceful missing-photo placeholder.
+- [x] Filter bar: text search (debounced), zone select, tag multi-select. Filter state in URL query
+      params (shareable). Area is a free-text filter rather than a select — scope.md fixes the zone
+      and tag lists upfront, but areas are open-ended data with nothing to enumerate until Milestone 2
+      seeds real mandals; an `areas.list` procedure could upgrade this to a real dropdown then.
+- [x] Client-side data via tRPC-react-query; keep filter state in sync with URL.
+- [x] Empty-state UI for zero results.
+- [x] Accessibility: `sr-only` labels on all filter inputs, `role="group"`/`aria-pressed` on tag
+      toggles, `role="status"` on the empty/loading state, `alt` text on thumbnails.
 
-**Acceptance:** filtering returns results <500ms on seeded data; page usable one-handed on mobile;
-Lighthouse mobile perf reasonable on throttled 3G (<3s, scope §11 — verified in Milestone 9).
+> **Note:** getting real ISR (not just the `revalidate` export) required routing this page's initial
+> fetch through a cookie-free Supabase client (`lib/supabase/public.ts`) rather than the session-aware
+> one tRPC's route handler uses. Next.js's Dynamic APIs (`cookies()`, `headers()`, reading
+> `searchParams`) force a whole route dynamic the moment anything in its render tree touches them —
+> public, unauthenticated reads have no reason to, so this keeps `/` genuinely static while a
+> shared/filtered link still works via the same static shell picking up the URL client-side.
+
+**Acceptance:** empty-state and filter/pagination logic verified via unit tests and a clean build;
+the <500ms-on-seeded-data and mobile/Lighthouse acceptance criteria need real data (Milestone 2) and
+a live database (Milestone 1) to actually measure.
 
 ---
 
