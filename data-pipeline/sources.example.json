@@ -1,0 +1,9 @@
+[
+  {
+    "url": "https://example.com/mumbai-ganpati-mandals-list",
+    "list_item_selector": ".mandal-listing-item",
+    "name_selector": ".mandal-name",
+    "area_selector": ".mandal-area",
+    "description_selector": ".mandal-description"
+  }
+]

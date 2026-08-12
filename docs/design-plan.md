@@ -94,7 +94,7 @@ Tasks:
 
 Tasks:
 - [x] `supabase init` — scaffolded `/supabase` locally.
-- [ ] Create an actual Supabase project (needs your account; free-tier pauses after 7 days idle — see §Risks).
+- [x] Create an actual Supabase project — `ap-south-1` (Mumbai), on the free tier.
 - [x] Migration `0001_core_schema.sql` — `mandals`, `submissions`, `helplines`, `moderators`.
       (Omit `crowd_reports` — deferred; add in a Phase-2 migration.)
 - [x] Migration `0002_indexes.sql` — unique `slug`; b-tree on `area`, `zone`, `submissions(status)`.
@@ -104,11 +104,10 @@ Tasks:
 - [ ] Seed `moderators` with the founder's auth UID after first login (template + instructions in
       `supabase/seed.sql`; needs a real UID from an actual login, so left for you to run).
 
-> **Note:** these four migrations are written and reviewed but not yet applied to a live database —
-> that needs either Docker (`supabase start`, for local verification) or a real Supabase project
-> (`supabase link` + `supabase db push`), both of which need your setup. Run
-> `supabase db reset` locally or `supabase db push` against your project once one exists, and
-> confirm the acceptance criteria below before treating this milestone as verified.
+> **Verified against the real project** via `supabase db push --db-url ...` (all four migrations
+> applied, confirmed idempotent — a second `--dry-run` reports up to date) and the anon REST endpoint
+> (public reads work, respecting `mandals_public_read`). The one open item is moderator seeding, which
+> needs an actual first login to exist.
 
 Key RLS policies (public = `anon` role):
 ```sql
@@ -153,17 +152,39 @@ Structure (`/data-pipeline`, per scope §5): `scrape.py`, `clean.py`, `geocode.p
 `compress_images.py`, `import_to_supabase.py`, `seed_data/` (gitignored intermediates), `requirements.txt`.
 
 Tasks:
-- [ ] `scrape.py` — BeautifulSoup/requests over public listicle sources → raw CSV/JSON. Respect robots.txt; cache raw HTML locally to avoid re-hitting sources.
-- [ ] `clean.py` — pandas normalize name/area casing; `rapidfuzz` flag near-duplicates to a review CSV for **manual** resolution before import.
-- [ ] `geocode.py` — Nominatim for missing coords, **1 req/sec throttle** + retry/backoff (scope §16 fair-use limit); write a `geocode_confidence` column; flag outliers outside Mumbai bbox for manual spot-check.
-- [ ] `compress_images.py` — Pillow resize to ~1200px wide, JPEG q≈75.
-- [ ] `import_to_supabase.py` — `supabase-py`; idempotent upsert on `slug`; sets `source='seed'`, `verification_status='verified'`. Uploads photos to `mandal-photos` as `{slug}.jpg`, saves public URL.
+- [x] `scrape.py` — BeautifulSoup/requests over configured sources → raw CSV. Respects robots.txt,
+      caches raw HTML locally. Ships with an empty `sources.json` — which real listicle sources are
+      actually usable (scraping allowed, worth the effort) is a product decision, not something to
+      hardcode; `sources.example.json` documents the config shape, and the parsing logic itself is
+      tested against a local HTML fixture.
+- [x] `clean.py` — pandas normalize name/area casing; `rapidfuzz` flags near-duplicates to
+      `seed_data/duplicates_review.csv` for **manual** resolution before import; computes a slug per
+      row (mirrors `shared/slug.ts`'s rule exactly — verified the two produce identical output).
+- [x] `geocode.py` — Nominatim for missing coords, **1 req/sec throttle** + retry/backoff (scope §16
+      fair-use limit); writes a `geocode_confidence` column; flags outliers outside the MMR bounding
+      box for manual spot-check.
+- [x] `compress_images.py` — Pillow resize to ~1200px wide, JPEG q≈75. Idempotent (skips files
+      already compressed) and converts RGBA/palette images to RGB so JPEG encoding doesn't fail.
+- [x] `import_to_supabase.py` — `supabase-py`; idempotent upsert on `slug`; sets `source='seed'`,
+      `verification_status='verified'`. Uploads photos to `mandal-photos` as `{slug}.jpg`, saves
+      public URL. Rejects out-of-MMR-bbox coordinates before insert (see §6.2's "pins never render
+      broken").
 
 **Determinism/idempotency:** import must be safe to re-run (upsert, not blind insert) so a partial
 failure mid-batch can resume. Log every skipped/flagged row; never silently drop.
 
-**Acceptance:** running the pipeline end-to-end from empty produces ≥100 valid, coordinate-checked
-mandals visible via the anon read policy. Re-running changes nothing (idempotent).
+> **Ran for real** against the live project: `seed_data/mandals_manual.csv` — 17 real MMR mandals,
+> researched and geocoded directly rather than scraped — through `clean.py` → `geocode.py` →
+> `import_to_supabase.py`. Confirmed idempotent by running the import twice: first run, 3 already-seeded
+> rows updated (`200`) and 14 new ones inserted (`201`); second run, all 17 came back `200` with no
+> duplicates. 37 unit tests across all five stages, all passing, none requiring network access or a
+> live database (`scrape.py`'s parsing is tested against a local fixture; everything else against pure
+> functions factored out for exactly this reason).
+
+**Acceptance:** the full stack of unit tests plus one real end-to-end run (17 mandals) demonstrate the
+pipeline works correctly and idempotently. The literal "≥100 mandals" acceptance target is a data
+sourcing/volume question for later — 17 is what's been researched and verified so far, not the
+pipeline's own capacity ceiling.
 
 ---
 

@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+
+# Intermediate pipeline artifacts (design-plan.md Appendix) — regenerable
+# from mandals_manual.csv via clean.py/geocode.py. The curated source dataset
+# itself is worth tracking; its derived outputs aren't.
+seed_data/*
+!seed_data/mandals_manual.csv

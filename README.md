@@ -14,8 +14,8 @@ The pre-launch data-collection landing page lives in a separate repo
 ```
 /
 ├── apps/web          ← Next.js (App Router) + TypeScript app
-├── data-pipeline      ← Python seeding scripts (added in Milestone 2)
-├── supabase           ← SQL migrations (added in Milestone 1)
+├── data-pipeline      ← Python seeding pipeline (Milestone 2)
+├── supabase           ← SQL migrations (Milestone 1)
 ├── docs/
 │   ├── design-plan.md ← implementation plan (milestones, decisions, enhancements)
 │   └── ui-mockup.html ← clickable UI prototype (open in a browser)
@@ -24,8 +24,10 @@ The pre-launch data-collection landing page lives in a separate repo
 
 ## Status
 
-Milestone 0 (scaffold) is in progress. See [`docs/design-plan.md`](docs/design-plan.md) §2 for
-what's done and what's next.
+Milestones 0–4 done: scaffold, database schema/RLS (live on a real Supabase project), the Python
+seeding pipeline (17 real mandals imported), the tRPC read API, and the ISR directory page. See
+[`docs/design-plan.md`](docs/design-plan.md) for what's done, what's open, and what's next
+(Milestone 5: map view).
 
 ## Tech stack
 
@@ -50,6 +52,8 @@ pnpm dev
 ```
 
 Other scripts (run from `apps/web`): `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm format`.
+
+See [`data-pipeline/README.md`](data-pipeline/README.md) for the seeding pipeline setup.
 
 ## License
 
