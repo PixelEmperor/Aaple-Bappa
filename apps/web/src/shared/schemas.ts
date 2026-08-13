@@ -60,7 +60,11 @@ export const mandalsListInputSchema = z.object({
   zone: z.enum(ZONES).optional(),
   tags: z.array(z.enum(TAGS)).optional(),
   page: z.number().int().min(1).default(1),
-  pageSize: z.number().int().min(1).max(100).default(24),
+  // Capped at 500, not 100: scope.md §6.2's non-functional target is smooth
+  // pan/zoom with 300+ pins loaded on the map view in one request (design-plan.md
+  // Milestone 5), so the cap needs headroom above that, not just the
+  // directory's 24-per-page default.
+  pageSize: z.number().int().min(1).max(500).default(24),
 })
 
 export type MandalsListInput = z.infer<typeof mandalsListInputSchema>

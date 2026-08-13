@@ -1,13 +1,9 @@
 'use client'
 
+import type { Filters } from '@/lib/mandal-filters'
 import { TAGS, ZONES } from '@/shared/schemas'
 
-export type Filters = {
-  search: string
-  area: string
-  zone: string
-  tags: string[]
-}
+export type { Filters }
 
 type FilterBarProps = {
   filters: Filters

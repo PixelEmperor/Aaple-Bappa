@@ -246,14 +246,39 @@ a live database (Milestone 1) to actually measure.
 **Goal:** clustered pin map at `/map` sharing the directory's filter state.
 
 Tasks:
-- [ ] `react-leaflet` map, OSM tiles, `dynamic(() => ..., { ssr: false })` (Leaflet needs `window`).
-- [ ] Single fetch of filtered mandals (lat/lng/name/slug/thumbnail) → `supercluster` for clustering.
-- [ ] Clusters expand on zoom; pin click opens popup with mini-card linking to detail page.
-- [ ] Read filter state from same URL params as directory; a "View on map" link on directory carries them over.
-- [ ] Guard: pins with invalid coords already excluded at write-time (Milestone 1) — assert in a dev-only check, don't silently filter at runtime.
+- [x] `react-leaflet` map, OSM tiles, `dynamic(() => ..., { ssr: false })` (Leaflet needs `window` —
+      confirmed: even `require('react-leaflet')` in plain Node throws `window is not defined`).
+- [x] Single fetch of filtered mandals → `use-supercluster` (`supercluster` wrapped as a hook) for
+      clustering, radius 75px, recomputed on `moveend`.
+- [x] Clusters expand on zoom (click → `getClusterExpansionZoom` + `setView`); pin click opens a
+      popup linking to the detail page.
+- [x] Read filter state from same URL params as directory (factored into shared
+      `lib/mandal-filters.ts` so the two views can't drift); "View on map" link added to the
+      directory, carrying the current filters over.
+- [x] Guard: `console.assert` on non-finite lat/lng reaching the map, not a silent filter — a mandal
+      getting this far with bad coordinates would mean Milestone 1's insert-time rejection broke,
+      which is worth knowing about, not quietly hiding.
 
-**Acceptance:** smooth pan/zoom with 300 pins on mid-range mobile (scope §6.2); dense Lalbaug/Girgaon
-areas cluster rather than overlap.
+> **Two real bugs found and fixed getting this working (both confirmed via a live browser check, not
+> just code review):**
+> 1. `mandalsListInputSchema`'s `pageSize` was capped at 100 (a leftover from directory-only
+>    thinking) — the map's request for 300 pins failed with a 400, and the query error was silently
+>    swallowed into an empty array. Fixed the cap to 500 and added visible error UI to both
+>    `DirectoryView` and `MapView` so a schema/query mismatch like this fails loudly next time.
+> 2. Even after that, zero markers rendered. Root cause: the map container's height depended on a
+>    `flex-1` chain running through `body`, which only has `min-height` (from `min-h-full`), not a
+>    definite height — so the whole chain resolved to a real, measured 0px tall container
+>    (`leaflet-container` clientHeight confirmed 0 via direct DOM inspection), giving Leaflet a
+>    degenerate zero-height bounding box that excluded every point regardless of longitude. Fixed by
+>    giving the map an explicit `h-[70vh]` instead of depending on flex-grow propagating correctly
+>    through several structurally-unrelated layout layers that were never built with a
+>    viewport-filling app shell in mind.
+
+**Acceptance:** verified in a real browser against the live 17-mandal dataset — clusters (counts of
+2, 2, 4, 5) correctly group the dense central/south Mumbai mandals, individual pins render for
+isolated ones (Andheri, Wadala), real OSM tiles load. Smooth-pan/zoom-at-300-pins and the
+Lalbaug/Girgaon-specifically stress test still need the fuller dataset from a larger Milestone 2 run
+to actually measure against scope §6.2's target.
 
 ---
 
