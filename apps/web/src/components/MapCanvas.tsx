@@ -1,34 +1,17 @@
 'use client'
 
-import L from 'leaflet'
+import type L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import Link from 'next/link'
 import { useMemo, useState } from 'react'
 import { MapContainer, Marker, Popup, TileLayer, useMap, useMapEvents } from 'react-leaflet'
 import useSupercluster from 'use-supercluster'
+import { clusterIcon, pinIcon } from '@/lib/leaflet-icons'
 import type { Mandal } from '@/shared/schemas'
 
 const MUMBAI_CENTER: [number, number] = [19.03, 72.92]
 const DEFAULT_ZOOM = 11
 const CLUSTER_MAX_ZOOM = 18
-
-// Divicons with inline styles rather than L.Icon + image assets: Leaflet's
-// default marker images don't resolve reliably through bundlers without
-// extra config, and a plain colored dot/badge is all this needs.
-const pinIcon = L.divIcon({
-  className: '',
-  html: '<div style="background:#ea580c;width:16px;height:16px;border-radius:50%;border:2px solid white;box-shadow:0 1px 3px rgba(0,0,0,.4)"></div>',
-  iconSize: [16, 16],
-})
-
-function clusterIcon(count: number): L.DivIcon {
-  const size = count < 10 ? 32 : count < 50 ? 40 : 48
-  return L.divIcon({
-    className: '',
-    html: `<div style="background:#ea580c;color:white;width:${size}px;height:${size}px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:13px;border:2px solid white;box-shadow:0 1px 3px rgba(0,0,0,.4)">${count}</div>`,
-    iconSize: [size, size],
-  })
-}
 
 function boundsToBbox(map: L.Map): [number, number, number, number] {
   const bounds = map.getBounds()

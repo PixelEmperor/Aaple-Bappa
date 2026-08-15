@@ -287,14 +287,24 @@ to actually measure against scope §6.2's target.
 **Goal:** full record at `/mandal/[slug]`.
 
 Tasks:
-- [ ] `generateStaticParams` from all published slugs; ISR `revalidate: 3600`.
-- [ ] Layout: photo, name, description, history, timings, tags, nearest station, mini-map (single-pin Leaflet island).
-- [ ] Core content renders server-side (works without JS, scope §6.3); mini-map is a progressive-enhancement island.
-- [ ] `notFound()` for unknown/unpublished slug → 404.
-- [ ] Graceful rendering when optional fields are null (no broken layout).
-- [ ] Basic SEO/OpenGraph metadata per mandal.
+- [x] `generateStaticParams` from all published slugs; ISR `revalidate: 3600`. Confirmed via `pnpm build`:
+      all 17 real mandals prerendered as `● SSG` with a 1h revalidate window.
+- [x] Layout: photo, name, description, history, timings, tags, nearest station, mini-map (single-pin Leaflet island).
+- [x] Core content renders server-side (works without JS, scope §6.3); mini-map is a progressive-enhancement island.
+      `MandalMiniMap`/`MandalMiniMapIsland` split the same way M5's `MapCanvas`/`MapView` do — `ssr: false`
+      isn't allowed directly inside a Server Component, so the dynamic import lives in a small Client
+      Component wrapper the (Server Component) page renders instead.
+- [x] `notFound()` for unknown/unpublished slug → 404. Only on `TRPCError` with code `NOT_FOUND`; any
+      other error (e.g. Supabase unreachable) rethrows rather than being misreported as "doesn't exist".
+- [x] Graceful rendering when optional fields are null (no broken layout) — every optional field is
+      conditionally rendered.
+- [x] Basic SEO/OpenGraph metadata per mandal, via `generateMetadata` (falls back to a generated
+      description when the DB's `description` column is empty, which it is for all 17 seeded rows so far).
 
-**Acceptance:** SSG/ISR fast load; core content visible with JS disabled; clean 404 for bad slug.
+**Acceptance:** verified live against the real database — real slug returns 200 with full content
+(name/area/tags/timings/station/established year all present in the raw server HTML, confirmed via
+curl with no JS execution); unknown slug returns a real 404; `generateMetadata`/page component share
+one Supabase fetch per request via React's `cache()`.
 
 ---
 
