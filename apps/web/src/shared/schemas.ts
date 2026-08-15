@@ -80,3 +80,74 @@ export type MandalsListOutput = z.infer<typeof mandalsListOutputSchema>
 export const mandalsGetBySlugInputSchema = z.object({
   slug: z.string().min(1),
 })
+
+/**
+ * Submission schemas (design-plan.md Milestone 7). Only `new_mandal` has a
+ * built submission form so far — `edit_mandal` exists in the DB schema
+ * (supabase/migrations/0001_core_schema.sql) for a future milestone.
+ */
+
+// Map-pin drop is preferred; free-text address is a fallback the server
+// geocodes (src/server/geocode.ts) — scope.md §6.4.
+export const submissionLocationSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('pin'),
+    lat: z.number().min(-90).max(90),
+    lng: z.number().min(-180).max(180),
+  }),
+  z.object({ kind: z.literal('address'), address: z.string().trim().min(3).max(300) }),
+])
+
+export type SubmissionLocation = z.infer<typeof submissionLocationSchema>
+
+export const newMandalPayloadSchema = z.object({
+  name: z.string().trim().min(2).max(200),
+  area: z.string().trim().min(2).max(200),
+  location: submissionLocationSchema,
+  established_year: z.number().int().min(1800).max(new Date().getFullYear()).optional(),
+  timings: z.string().trim().max(200).optional(),
+  nearest_station: z.string().trim().max(200).optional(),
+  description: z.string().trim().max(1000).optional(),
+  tags: z.array(z.enum(TAGS)).optional(),
+  official_contact: z.string().trim().max(200).optional(),
+  is_public: z.boolean().default(true),
+  // A compressed (client-side, browser canvas) image as a data: URL — the
+  // server re-validates type/size from the actual bytes regardless
+  // (src/server/image-validation.ts), never trusting this alone.
+  photo_data_url: z.string().optional(),
+})
+
+export type NewMandalPayload = z.infer<typeof newMandalPayloadSchema>
+
+export const submissionsCreateInputSchema = z.object({
+  type: z.literal('new_mandal'),
+  payload: newMandalPayloadSchema,
+  submitter_contact: z.string().trim().max(200).optional(),
+  // Set after a possible_duplicate response, once the submitter confirms
+  // "this isn't a duplicate" — re-running the same call with this true
+  // skips the duplicate check and writes straight through.
+  confirm_duplicate: z.boolean().default(false),
+  // Anonymous, client-generated (src/lib/session-id.ts), for rate-limiting
+  // only — same pattern as crowd_reports.reporter_session_id (scope.md §4).
+  session_id: z.uuid(),
+})
+
+export type SubmissionsCreateInput = z.infer<typeof submissionsCreateInputSchema>
+
+const duplicateMatchSchema = z.object({
+  id: z.uuid(),
+  name: z.string(),
+  slug: z.string(),
+  area: z.string(),
+  lat: z.number(),
+  lng: z.number(),
+  nameSimilarity: z.number(),
+  distanceMeters: z.number(),
+})
+
+export const submissionsCreateOutputSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('possible_duplicate'), matches: z.array(duplicateMatchSchema) }),
+  z.object({ status: z.literal('created'), submissionId: z.uuid() }),
+])
+
+export type SubmissionsCreateOutput = z.infer<typeof submissionsCreateOutputSchema>

@@ -313,18 +313,41 @@ one Supabase fetch per request via React's `cache()`.
 **Goal:** public can propose new mandals / edits into the moderation queue.
 
 Tasks:
-- [ ] Multi-step form at `/submit`: name, area, **map-pin drop** (preferred over free-text address), optional fields (photo, established year, timings, station, description, tags, contact, public/private), submitter contact.
-- [ ] Client-side image compression (browser canvas) before upload; type (JPEG/PNG/WebP) + size (≤2MB) check client + server.
-- [ ] `submissions.create` (publicProcedure, Zod-validated): geocode if only free-text address given; run **live duplicate check** (fuzzy name + haversine proximity) → return `{ status: 'possible_duplicate', matches }` for a "did you mean X?" confirm step before final write.
-- [ ] On confirm: insert to `submissions` as `pending` with `type` and `payload` jsonb.
-- [ ] Photo upload path: client → `submissions.create` validates → server forwards to `mandal-photos` (no direct client-to-arbitrary-path writes, scope §8).
-- [ ] **Rate limiting** on `submissions.create`: per-session + per-IP window (e.g. token bucket in a `rate_limits` table or Upstash free tier). Fail closed with a clear message.
+- [x] Multi-step form at `/submit`: name, area, **map-pin drop** (preferred over free-text address,
+      with a toggle to a free-text fallback), optional fields (photo, established year, timings,
+      station, description, tags, contact, public/private), submitter contact. Only `new_mandal` —
+      `edit_mandal` is left for a future milestone (the DB/schema already support it).
+- [x] Client-side image compression (browser canvas, `lib/compress-image.ts`) before upload; type
+      (JPEG/PNG/WebP) + size (≤2MB) check both client and server (`server/image-validation.ts` sniffs
+      actual magic bytes rather than trusting the claimed MIME type — the classic spoofing gap).
+- [x] `submissions.create` (publicProcedure, Zod-validated): geocodes (`server/geocode.ts`, Nominatim)
+      if only a free-text address is given; runs **live duplicate check**
+      (`server/duplicate-check.ts` — Fuse.js name similarity + haversine proximity) → returns
+      `{ status: 'possible_duplicate', matches }` before writing anything.
+- [x] On confirm (`confirm_duplicate: true`): inserts to `submissions` as `pending` with `type` and
+      `payload` jsonb. Explicit client-generated `id`, not `.select()` after insert — anon has no
+      SELECT policy on `submissions` (insert-only), so reading the row back would silently return
+      nothing under RLS.
+- [x] Photo upload path (`server/photo-upload.ts`): client sends a compressed data: URL →
+      `submissions.create` validates it → server uploads to `mandal-photos` via the service-role
+      client (no direct client-to-bucket writes, scope §8 — anon has no storage insert policy either).
+- [x] **Rate limiting**: `0005_rate_limits.sql` adds an atomic `rate_limit_check()` Postgres function
+      (row-locked per key, so concurrent calls for the same key can't race a read-then-write) — a
+      fixed-window substitute for the token-bucket example, checked per-session and per-IP. Fails
+      closed with a clear message on `TOO_MANY_REQUESTS`.
 
-**Testing:** unit-test duplicate detection (name variants + proximity thresholds) and payload
-validation; these are the highest-risk logic paths.
+**Testing:** unit-tested duplicate detection (`duplicate-check.test.ts` — name variants, proximity
+thresholds, sorting) and image validation (`image-validation.test.ts` — magic-byte sniffing, spoofed
+MIME types, size limits), the two highest-risk logic paths per the original plan.
 
-**Acceptance:** motivated mobile user completes a submission in <2min (scope §6.4); duplicate warning
-fires for a near-match; oversized/wrong-type image rejected server-side.
+**Acceptance:** verified live end-to-end against the real database — a genuinely new mandal creates a
+pending submission; resubmitting an existing mandal's name at its real coordinates returns a
+`possible_duplicate` match at 95%+ name similarity and 0m distance; a real (if minimal) JPEG uploads
+to `mandal-photos` and is publicly fetchable; hitting the rate limit returns 429 with a clear message;
+anon can insert into `submissions` but reading it back (even the row just inserted) returns nothing,
+confirming the insert-only RLS policy actually holds. The <2-minute mobile completion time and
+oversized/wrong-type image rejection are implemented and unit-tested but not independently timed/
+fuzz-tested against real devices.
 
 ---
 
