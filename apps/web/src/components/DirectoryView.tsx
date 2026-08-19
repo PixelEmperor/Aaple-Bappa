@@ -69,29 +69,46 @@ export function DirectoryView({ initialData }: DirectoryViewProps) {
   const mapQuery = queryStringFromFilters(filters)
 
   return (
-    <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-4 py-8 sm:px-6">
-      <div className="flex items-center justify-between gap-4">
-        <h1 className="text-2xl font-bold">Ganpati mandals</h1>
+    <main
+      id="main-content"
+      className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-4 py-8 sm:px-6"
+    >
+      <div>
+        <span className="text-xs font-bold tracking-widest text-accent-deep uppercase">
+          Discover · Plan · Visit
+        </span>
+        <h1 className="mt-2 text-2xl font-bold sm:text-3xl">
+          Find every Ganpati across the Mumbai region.
+        </h1>
+        <p className="mt-2 max-w-prose text-ink-soft">
+          A free, crowd-built map of sarvajanik mandals across Mumbai, Thane, Navi Mumbai and the
+          wider MMR.
+        </p>
+      </div>
+
+      <FilterBar filters={filters} onChange={handleFiltersChange} />
+
+      <div className="flex items-center justify-between gap-4 border-b border-line pb-3">
+        <span className="text-sm text-ink-soft">
+          <b className="font-bold text-ink">{data?.total ?? 0}</b> mandal
+          {data?.total === 1 ? '' : 's'}
+        </span>
         <Link
           href={mapQuery ? `/map?${mapQuery}` : '/map'}
-          className="text-sm font-medium text-orange-600 hover:underline"
+          className="text-sm font-semibold text-accent-deep hover:underline"
         >
           View on map →
         </Link>
       </div>
-      <FilterBar filters={filters} onChange={handleFiltersChange} />
 
       {error && (
-        <p
-          role="alert"
-          className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300"
-        >
+        <p role="alert" className="rounded-md bg-crit-tint px-3 py-2 text-sm text-crit">
           Couldn&apos;t load mandals: {error.message}
         </p>
       )}
 
       {items.length === 0 ? (
-        <p role="status" className="py-12 text-center text-zinc-500 dark:text-zinc-400">
+        <p role="status" className="py-12 text-center text-ink-faint">
           {isFetching ? 'Loading…' : 'No mandals match these filters yet.'}
         </p>
       ) : (

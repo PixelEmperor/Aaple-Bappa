@@ -1,12 +1,24 @@
 import { TRPCError } from '@trpc/server'
 import { randomUUID } from 'node:crypto'
 import { headers } from 'next/headers'
-import { submissionsCreateInputSchema, submissionsCreateOutputSchema } from '@/shared/schemas'
+import { revalidatePath } from 'next/cache'
+import { createSupabaseServiceRoleClient } from '@/lib/supabase/service-role'
+import {
+  submissionsCreateInputSchema,
+  submissionsCreateOutputSchema,
+  submissionsListInputSchema,
+  submissionsListOutputSchema,
+  submissionsReviewInputSchema,
+  submissionsReviewOutputSchema,
+} from '@/shared/schemas'
 import { findPossibleDuplicates } from '../duplicate-check'
 import { geocodeAddress } from '../geocode'
+import { resolveGoogleMapsLink } from '../google-maps-link'
+import { buildMandalEditPatch, buildNewMandalInsert, formatAuditTrail } from '../mandal-approval'
+import { paginationRange } from '../mandals-query'
 import { uploadSubmissionPhoto } from '../photo-upload'
 import { checkRateLimit } from '../rate-limit'
-import { publicProcedure, router } from '../trpc'
+import { moderatorProcedure, publicProcedure, router } from '../trpc'
 
 async function clientIp(): Promise<string> {
   const headerList = await headers()
@@ -41,6 +53,16 @@ export const submissionsRouter = router({
       let location: { lat: number; lng: number }
       if (input.payload.location.kind === 'pin') {
         location = { lat: input.payload.location.lat, lng: input.payload.location.lng }
+      } else if (input.payload.location.kind === 'google_maps_link') {
+        const resolved = await resolveGoogleMapsLink(input.payload.location.url)
+        if (!resolved) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message:
+              "Couldn't find a location in that link — try dropping a pin on the map instead.",
+          })
+        }
+        location = resolved
       } else {
         const geocoded = await geocodeAddress(input.payload.location.address)
         if (!geocoded) {
@@ -106,5 +128,157 @@ export const submissionsRouter = router({
       }
 
       return { status: 'created' as const, submissionId }
+    }),
+
+  /** Moderator-only queue (design-plan.md Milestone 8). */
+  list: moderatorProcedure
+    .input(submissionsListInputSchema)
+    .output(submissionsListOutputSchema)
+    .query(async ({ input }) => {
+      const { from, to } = paginationRange(input.page, input.pageSize)
+
+      // Service-role, not ctx.supabase: submissions has no select policy for
+      // anon/authenticated (submissions_public_insert is insert-only,
+      // supabase/migrations/0003_rls.sql) — the moderatorProcedure check
+      // upstream is what authorizes this read, not RLS.
+      const supabase = createSupabaseServiceRoleClient()
+      const { data, count, error } = await supabase
+        .from('submissions')
+        .select('*', { count: 'exact' })
+        .eq('status', input.status)
+        .order('submitted_at', { ascending: true })
+        .range(from, to)
+
+      if (error) {
+        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: error.message })
+      }
+
+      return { items: data ?? [], total: count ?? 0, page: input.page }
+    }),
+
+  /**
+   * Approve/reject a pending submission (design-plan.md Milestone 8). Approve
+   * writes go through a Postgres function (supabase/migrations/0006_submission_review.sql)
+   * so the mandals write and the submissions status update commit atomically —
+   * slug generation and edit-patch whitelisting stay in JS (../mandal-approval),
+   * only the already-decided row is handed to the function.
+   */
+  review: moderatorProcedure
+    .input(submissionsReviewInputSchema)
+    .output(submissionsReviewOutputSchema)
+    .mutation(async ({ input }) => {
+      const supabase = createSupabaseServiceRoleClient()
+
+      const { data: submission, error: fetchError } = await supabase
+        .from('submissions')
+        .select('*')
+        .eq('id', input.submissionId)
+        .maybeSingle()
+
+      if (fetchError) {
+        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: fetchError.message })
+      }
+      if (!submission) {
+        throw new TRPCError({ code: 'NOT_FOUND' })
+      }
+      if (submission.status !== 'pending') {
+        throw new TRPCError({
+          code: 'CONFLICT',
+          message: 'This submission was already reviewed.',
+        })
+      }
+
+      if (input.decision === 'reject') {
+        const { error: rejectError } = await supabase
+          .from('submissions')
+          .update({
+            status: 'rejected',
+            moderator_notes: input.moderatorNotes ?? null,
+            reviewed_at: new Date().toISOString(),
+          })
+          .eq('id', input.submissionId)
+
+        if (rejectError) {
+          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: rejectError.message })
+        }
+
+        return { status: 'rejected' as const, mandalSlug: null }
+      }
+
+      let mandalSlug: string | null
+
+      if (submission.type === 'new_mandal') {
+        const { data: existingRows, error: slugFetchError } = await supabase
+          .from('mandals')
+          .select('slug')
+
+        if (slugFetchError) {
+          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: slugFetchError.message })
+        }
+
+        const existingSlugs = new Set((existingRows ?? []).map((row) => row.slug as string))
+        const insertRow = buildNewMandalInsert(submission.payload, existingSlugs)
+
+        const { data: slug, error: rpcError } = await supabase.rpc(
+          'approve_new_mandal_submission',
+          {
+            p_submission_id: input.submissionId,
+            p_mandal: insertRow,
+            p_moderator_notes: input.moderatorNotes ?? null,
+          }
+        )
+
+        if (rpcError) {
+          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: rpcError.message })
+        }
+        mandalSlug = slug
+      } else {
+        if (!submission.mandal_id) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Edit submission is missing its target mandal.',
+          })
+        }
+
+        const { data: existingMandal, error: mandalFetchError } = await supabase
+          .from('mandals')
+          .select('*')
+          .eq('id', submission.mandal_id)
+          .maybeSingle()
+
+        if (mandalFetchError) {
+          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: mandalFetchError.message })
+        }
+        if (!existingMandal) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Target mandal no longer exists.' })
+        }
+
+        const patch = buildMandalEditPatch(submission.payload)
+        const notes = formatAuditTrail(existingMandal, patch, input.moderatorNotes)
+
+        const { data: slug, error: rpcError } = await supabase.rpc(
+          'approve_edit_mandal_submission',
+          {
+            p_submission_id: input.submissionId,
+            p_mandal_id: submission.mandal_id,
+            p_patch: patch,
+            p_moderator_notes: notes,
+          }
+        )
+
+        if (rpcError) {
+          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: rpcError.message })
+        }
+        mandalSlug = slug
+      }
+
+      // Approved content is now live — refresh the ISR pages that cached its
+      // absence (design-plan.md Milestone 8).
+      revalidatePath('/')
+      if (mandalSlug) {
+        revalidatePath(`/mandal/${mandalSlug}`)
+      }
+
+      return { status: 'approved' as const, mandalSlug }
     }),
 })

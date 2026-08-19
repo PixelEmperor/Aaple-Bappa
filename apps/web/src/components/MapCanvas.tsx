@@ -104,7 +104,12 @@ function ClusterLayer({ mandals }: { mandals: Mandal[] }) {
             <Popup>
               <b>{feature.properties.name}</b>
               <br />
-              <Link href={`/mandal/${feature.properties.slug}`}>View details →</Link>
+              <Link
+                href={`/mandal/${feature.properties.slug}`}
+                className="font-semibold text-accent-deep"
+              >
+                View details →
+              </Link>
             </Popup>
           </Marker>
         )

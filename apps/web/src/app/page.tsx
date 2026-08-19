@@ -31,17 +31,16 @@ export default async function Home() {
 
   if (!initialData) {
     return (
-      <main className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
+      <main
+        id="main-content"
+        className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center"
+      >
         <h1 className="text-2xl font-bold">Directory not available yet</h1>
-        <p className="max-w-md text-zinc-600 dark:text-zinc-400">
+        <p className="max-w-md text-ink-soft">
           The database isn&apos;t configured in this environment. Copy{' '}
-          <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-sm dark:bg-white/[.08]">
-            .env.example
-          </code>{' '}
+          <code className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-sm">.env.example</code>{' '}
           to{' '}
-          <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-sm dark:bg-white/[.08]">
-            .env.local
-          </code>{' '}
+          <code className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-sm">.env.local</code>{' '}
           and fill in your Supabase project details.
         </p>
       </main>

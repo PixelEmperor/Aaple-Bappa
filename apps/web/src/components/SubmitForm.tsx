@@ -4,17 +4,17 @@ import { useState } from 'react'
 import { compressImageToDataUrl } from '@/lib/compress-image'
 import { getOrCreateSessionId } from '@/lib/session-id'
 import { trpc } from '@/lib/trpc/react'
-import { TAGS, type SubmissionsCreateOutput } from '@/shared/schemas'
+import { TAGS, type SubmissionLocation, type SubmissionsCreateOutput } from '@/shared/schemas'
 import MandalPinPicker, { type PinLocation } from './MandalPinPickerIsland'
 
-const TOTAL_STEPS = 3
+const STEP_LABELS = ['Basics', 'Details & photo', 'Review']
 
 type FormState = {
   name: string
   area: string
-  locationMode: 'pin' | 'address'
   pin: PinLocation | null
   address: string
+  googleMapsUrl: string
   establishedYear: string
   timings: string
   nearestStation: string
@@ -29,9 +29,9 @@ type FormState = {
 const INITIAL_STATE: FormState = {
   name: '',
   area: '',
-  locationMode: 'pin',
   pin: null,
   address: '',
+  googleMapsUrl: '',
   establishedYear: '',
   timings: '',
   nearestStation: '',
@@ -44,18 +44,73 @@ const INITIAL_STATE: FormState = {
 }
 
 const inputClass =
-  'w-full rounded-md border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900'
+  'w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink focus:border-accent focus:ring-3 focus:ring-accent-tint focus:outline-none'
+const primaryButtonClass =
+  'flex-1 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent-deep disabled:opacity-50'
+const ghostButtonClass =
+  'flex-1 rounded-md border border-line px-4 py-2 text-sm font-semibold text-ink-soft hover:border-ink-faint hover:text-ink'
+
+function hasLocation(form: FormState): boolean {
+  return (
+    form.pin !== null || form.address.trim().length >= 3 || form.googleMapsUrl.trim().length > 0
+  )
+}
 
 function step1Valid(form: FormState): boolean {
-  if (form.name.trim().length < 2 || form.area.trim().length < 2) return false
-  if (form.locationMode === 'pin') return form.pin !== null
-  return form.address.trim().length >= 3
+  return form.name.trim().length >= 2 && form.area.trim().length >= 2 && hasLocation(form)
+}
+
+// Pin is the most precise (no geocoding/link-resolution needed server-side);
+// a Maps link still names an exact point, so it outranks a typed address,
+// which needs Nominatim to guess at one. Any combination of the three can be
+// filled in — this just decides which one wins if more than one is.
+function locationPayload(form: FormState): SubmissionLocation {
+  if (form.pin) {
+    return { kind: 'pin', lat: form.pin.lat, lng: form.pin.lng }
+  }
+  if (form.googleMapsUrl.trim()) {
+    return { kind: 'google_maps_link', url: form.googleMapsUrl.trim() }
+  }
+  return { kind: 'address', address: form.address.trim() }
 }
 
 type DuplicateMatches = Extract<
   SubmissionsCreateOutput,
   { status: 'possible_duplicate' }
 >['matches']
+
+function StepIndicator({ step }: { step: number }) {
+  return (
+    <div className="flex items-center gap-2" aria-hidden="true">
+      {STEP_LABELS.map((label, index) => {
+        const num = index + 1
+        const done = num < step
+        const active = num === step
+        return (
+          <div key={label} className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
+              <span
+                className={`grid size-6 flex-none place-items-center rounded-full border text-xs font-bold ${
+                  done
+                    ? 'border-good bg-good text-white'
+                    : active
+                      ? 'border-accent bg-accent text-white'
+                      : 'border-line bg-surface-2 text-ink-faint'
+                }`}
+              >
+                {done ? '✓' : num}
+              </span>
+              <span className={`text-sm font-semibold ${active ? 'text-ink' : 'text-ink-faint'}`}>
+                {label}
+              </span>
+            </div>
+            {num < STEP_LABELS.length && <span className="h-px w-6 bg-line" />}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
 
 export function SubmitForm() {
   const [step, setStep] = useState(1)
@@ -87,10 +142,7 @@ export function SubmitForm() {
       payload: {
         name: form.name.trim(),
         area: form.area.trim(),
-        location:
-          form.locationMode === 'pin' && form.pin
-            ? { kind: 'pin', lat: form.pin.lat, lng: form.pin.lng }
-            : { kind: 'address', address: form.address.trim() },
+        location: locationPayload(form),
         established_year: form.establishedYear ? Number(form.establishedYear) : undefined,
         timings: form.timings.trim() || undefined,
         nearest_station: form.nearestStation.trim() || undefined,
@@ -130,11 +182,9 @@ export function SubmitForm() {
 
   if (submissionId) {
     return (
-      <div className="rounded-lg border border-green-200 bg-green-50 p-6 text-center dark:border-green-900 dark:bg-green-950">
-        <h2 className="text-lg font-semibold text-green-800 dark:text-green-300">
-          Thanks — submitted!
-        </h2>
-        <p className="mt-2 text-sm text-green-700 dark:text-green-400">
+      <div className="rounded-lg border border-good bg-good-tint p-6 text-center">
+        <h2 className="text-lg font-bold text-good">Thanks — submitted!</h2>
+        <p className="mt-2 text-sm text-ink-soft">
           A volunteer will review it before it appears on Aaple Bappa.
         </p>
       </div>
@@ -144,42 +194,53 @@ export function SubmitForm() {
   if (duplicates) {
     return (
       <div className="flex flex-col gap-4">
-        <h2 className="text-lg font-semibold">Did you mean one of these?</h2>
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">
-          We found {duplicates.length} mandal{duplicates.length > 1 ? 's' : ''} that might already
-          be this one.
-        </p>
+        <div className="flex gap-3 rounded-md border border-warn/40 bg-warn-tint p-4">
+          <svg
+            viewBox="0 0 24 24"
+            width="20"
+            height="20"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            className="mt-0.5 flex-none text-warn"
+          >
+            <path
+              d="M12 9v4M12 17h.01M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"
+              strokeLinejoin="round"
+            />
+          </svg>
+          <div>
+            <h2 className="text-sm font-bold">Did you mean one of these?</h2>
+            <p className="mt-1 text-sm text-ink-soft">
+              We found {duplicates.length} mandal{duplicates.length > 1 ? 's' : ''} that might
+              already be this one.
+            </p>
+          </div>
+        </div>
         <ul className="flex flex-col gap-2">
           {duplicates.map((match) => (
-            <li
-              key={match.id}
-              className="rounded-md border border-zinc-200 p-3 text-sm dark:border-zinc-800"
-            >
-              <div className="font-medium">{match.name}</div>
-              <div className="text-zinc-500 dark:text-zinc-400">
+            <li key={match.id} className="rounded-md border border-line bg-surface p-3 text-sm">
+              <div className="font-semibold">{match.name}</div>
+              <div className="text-ink-soft">
                 {match.area} · {Math.round(match.distanceMeters)}m away
               </div>
             </li>
           ))}
         </ul>
         {errorMessage && (
-          <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+          <p role="alert" className="text-sm text-crit">
             {errorMessage}
           </p>
         )}
         <div className="flex gap-3">
-          <button
-            type="button"
-            onClick={() => setDuplicates(null)}
-            className="flex-1 rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium dark:border-zinc-700"
-          >
+          <button type="button" onClick={() => setDuplicates(null)} className={ghostButtonClass}>
             Go back and edit
           </button>
           <button
             type="button"
             onClick={handleConfirmNotDuplicate}
             disabled={createSubmission.isPending}
-            className="flex-1 rounded-md bg-orange-600 px-4 py-2 text-sm font-medium text-white hover:bg-orange-700 disabled:opacity-50"
+            className={primaryButtonClass}
           >
             {createSubmission.isPending ? 'Submitting…' : "It's not a duplicate — submit anyway"}
           </button>
@@ -190,15 +251,13 @@ export function SubmitForm() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
-        Step {step} of {TOTAL_STEPS}
-      </div>
+      <StepIndicator step={step} />
 
       {step === 1 && (
         <div className="flex flex-col gap-4">
           <label className="flex flex-col gap-1">
-            <span className="text-sm font-medium">
-              Mandal name <span className="text-orange-600">*</span>
+            <span className="text-sm font-semibold">
+              Mandal name <span className="text-accent-deep">*</span>
             </span>
             <input
               type="text"
@@ -210,8 +269,8 @@ export function SubmitForm() {
           </label>
 
           <label className="flex flex-col gap-1">
-            <span className="text-sm font-medium">
-              Area <span className="text-orange-600">*</span>
+            <span className="text-sm font-semibold">
+              Area <span className="text-accent-deep">*</span>
             </span>
             <input
               type="text"
@@ -222,27 +281,27 @@ export function SubmitForm() {
             />
           </label>
 
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-medium">
-                Location <span className="text-orange-600">*</span>
-              </span>
-              <button
-                type="button"
-                onClick={() =>
-                  update('locationMode', form.locationMode === 'pin' ? 'address' : 'pin')
-                }
-                className="text-xs font-medium text-orange-600 hover:underline"
-              >
-                {form.locationMode === 'pin' ? "I don't know the exact spot" : 'Drop a pin instead'}
-              </button>
+          <div className="flex flex-col gap-3">
+            <span className="text-sm font-semibold">
+              Location <span className="text-accent-deep">*</span>
+            </span>
+            <p className="-mt-1 text-xs text-ink-faint">
+              Give us at least one of the three below — a dropped pin is the most accurate, but any
+              one works.
+            </p>
+
+            <div className="h-64 overflow-hidden rounded-lg border border-dashed border-accent">
+              <MandalPinPicker value={form.pin} onChange={(value) => update('pin', value)} />
             </div>
 
-            {form.locationMode === 'pin' ? (
-              <div className="h-64 overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
-                <MandalPinPicker value={form.pin} onChange={(value) => update('pin', value)} />
-              </div>
-            ) : (
+            <div className="flex items-center gap-3 text-xs font-bold text-ink-faint uppercase">
+              <span className="h-px flex-1 bg-line" />
+              or
+              <span className="h-px flex-1 bg-line" />
+            </div>
+
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-ink-soft">Type an address</span>
               <input
                 type="text"
                 value={form.address}
@@ -250,14 +309,34 @@ export function SubmitForm() {
                 className={inputClass}
                 placeholder="Street address, landmark, or area"
               />
-            )}
+            </label>
+
+            <div className="flex items-center gap-3 text-xs font-bold text-ink-faint uppercase">
+              <span className="h-px flex-1 bg-line" />
+              or
+              <span className="h-px flex-1 bg-line" />
+            </div>
+
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-ink-soft">Paste a Google Maps link</span>
+              <input
+                type="url"
+                value={form.googleMapsUrl}
+                onChange={(e) => update('googleMapsUrl', e.target.value)}
+                className={inputClass}
+                placeholder="https://maps.google.com/... or https://maps.app.goo.gl/..."
+              />
+              <span className="text-xs text-ink-faint">
+                From the Google Maps app&apos;s Share button.
+              </span>
+            </label>
           </div>
 
           <button
             type="button"
             disabled={!step1Valid(form)}
             onClick={() => setStep(2)}
-            className="rounded-md bg-orange-600 px-4 py-2 text-sm font-medium text-white hover:bg-orange-700 disabled:opacity-50"
+            className={primaryButtonClass}
           >
             Next
           </button>
@@ -266,12 +345,12 @@ export function SubmitForm() {
 
       {step === 2 && (
         <div className="flex flex-col gap-4">
-          <p className="text-sm text-zinc-500 dark:text-zinc-400">
+          <p className="text-sm text-ink-soft">
             Everything below is optional — add whatever you know, skip the rest.
           </p>
 
           <label className="flex flex-col gap-1">
-            <span className="text-sm font-medium">Year established</span>
+            <span className="text-sm font-semibold">Year established</span>
             <input
               type="number"
               value={form.establishedYear}
@@ -281,7 +360,7 @@ export function SubmitForm() {
           </label>
 
           <label className="flex flex-col gap-1">
-            <span className="text-sm font-medium">Darshan timings</span>
+            <span className="text-sm font-semibold">Darshan timings</span>
             <input
               type="text"
               value={form.timings}
@@ -292,7 +371,7 @@ export function SubmitForm() {
           </label>
 
           <label className="flex flex-col gap-1">
-            <span className="text-sm font-medium">Nearest railway station</span>
+            <span className="text-sm font-semibold">Nearest railway station</span>
             <input
               type="text"
               value={form.nearestStation}
@@ -302,7 +381,7 @@ export function SubmitForm() {
           </label>
 
           <label className="flex flex-col gap-1">
-            <span className="text-sm font-medium">Description</span>
+            <span className="text-sm font-semibold">Description</span>
             <textarea
               value={form.description}
               onChange={(e) => update('description', e.target.value)}
@@ -312,7 +391,7 @@ export function SubmitForm() {
           </label>
 
           <div className="flex flex-col gap-2">
-            <span className="text-sm font-medium">Tags</span>
+            <span className="text-sm font-semibold">Tags</span>
             <div className="flex flex-wrap gap-2">
               {TAGS.map((tag) => (
                 <button
@@ -320,10 +399,10 @@ export function SubmitForm() {
                   type="button"
                   aria-pressed={form.tags.includes(tag)}
                   onClick={() => toggleTag(tag)}
-                  className={`rounded-full border px-3 py-1 text-xs font-medium ${
+                  className={`rounded-full border px-3 py-1 text-xs font-bold ${
                     form.tags.includes(tag)
-                      ? 'border-orange-600 bg-orange-600 text-white'
-                      : 'border-zinc-300 text-zinc-600 dark:border-zinc-700 dark:text-zinc-400'
+                      ? 'border-accent bg-accent text-white'
+                      : 'border-line text-ink-soft hover:border-ink-faint hover:text-ink'
                   }`}
                 >
                   {tag}
@@ -333,7 +412,7 @@ export function SubmitForm() {
           </div>
 
           <label className="flex flex-col gap-1">
-            <span className="text-sm font-medium">Official contact</span>
+            <span className="text-sm font-semibold">Official contact</span>
             <input
               type="text"
               value={form.officialContact}
@@ -343,7 +422,7 @@ export function SubmitForm() {
           </label>
 
           <label className="flex flex-col gap-1">
-            <span className="text-sm font-medium">Photo</span>
+            <span className="text-sm font-semibold">Photo</span>
             <input
               type="file"
               accept="image/jpeg,image/png,image/webp"
@@ -363,18 +442,10 @@ export function SubmitForm() {
           </label>
 
           <div className="flex gap-3">
-            <button
-              type="button"
-              onClick={() => setStep(1)}
-              className="flex-1 rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium dark:border-zinc-700"
-            >
+            <button type="button" onClick={() => setStep(1)} className={ghostButtonClass}>
               Back
             </button>
-            <button
-              type="button"
-              onClick={() => setStep(3)}
-              className="flex-1 rounded-md bg-orange-600 px-4 py-2 text-sm font-medium text-white hover:bg-orange-700"
-            >
+            <button type="button" onClick={() => setStep(3)} className={primaryButtonClass}>
               Next
             </button>
           </div>
@@ -384,7 +455,7 @@ export function SubmitForm() {
       {step === 3 && (
         <div className="flex flex-col gap-4">
           <label className="flex flex-col gap-1">
-            <span className="text-sm font-medium">Your name or contact (optional)</span>
+            <span className="text-sm font-semibold">Your name or contact (optional)</span>
             <input
               type="text"
               value={form.submitterContact}
@@ -394,30 +465,26 @@ export function SubmitForm() {
             />
           </label>
 
-          <div className="rounded-md bg-zinc-50 p-3 text-sm dark:bg-zinc-900">
-            <div className="font-medium">{form.name || 'Untitled mandal'}</div>
-            <div className="text-zinc-500 dark:text-zinc-400">{form.area}</div>
+          <div className="rounded-md border border-line bg-surface-2 p-3 text-sm">
+            <div className="font-semibold">{form.name || 'Untitled mandal'}</div>
+            <div className="text-ink-soft">{form.area}</div>
           </div>
 
           {errorMessage && (
-            <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+            <p role="alert" className="text-sm text-crit">
               {errorMessage}
             </p>
           )}
 
           <div className="flex gap-3">
-            <button
-              type="button"
-              onClick={() => setStep(2)}
-              className="flex-1 rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium dark:border-zinc-700"
-            >
+            <button type="button" onClick={() => setStep(2)} className={ghostButtonClass}>
               Back
             </button>
             <button
               type="button"
               onClick={handleSubmit}
               disabled={createSubmission.isPending}
-              className="flex-1 rounded-md bg-orange-600 px-4 py-2 text-sm font-medium text-white hover:bg-orange-700 disabled:opacity-50"
+              className={primaryButtonClass}
             >
               {createSubmission.isPending ? 'Submitting…' : 'Submit'}
             </button>

@@ -88,7 +88,9 @@ export const mandalsGetBySlugInputSchema = z.object({
  */
 
 // Map-pin drop is preferred; free-text address is a fallback the server
-// geocodes (src/server/geocode.ts) — scope.md §6.4.
+// geocodes (src/server/geocode.ts) — scope.md §6.4. google_maps_link is a
+// second fallback: the server extracts lat/lng straight out of the URL
+// (src/server/google-maps-link.ts) — no Google API key, no cost.
 export const submissionLocationSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('pin'),
@@ -96,6 +98,7 @@ export const submissionLocationSchema = z.discriminatedUnion('kind', [
     lng: z.number().min(-180).max(180),
   }),
   z.object({ kind: z.literal('address'), address: z.string().trim().min(3).max(300) }),
+  z.object({ kind: z.literal('google_maps_link'), url: z.string().trim().min(1).max(500) }),
 ])
 
 export type SubmissionLocation = z.infer<typeof submissionLocationSchema>
@@ -151,3 +154,84 @@ export const submissionsCreateOutputSchema = z.discriminatedUnion('status', [
 ])
 
 export type SubmissionsCreateOutput = z.infer<typeof submissionsCreateOutputSchema>
+
+/**
+ * Moderator-facing schemas (design-plan.md Milestone 8). `payload` stays a
+ * loose record here — `new_mandal` submissions store a mandal-shaped object
+ * written by submissions.create (see server/mandal-approval.ts for the typed
+ * view of that shape), while `edit_mandal` has no producer yet and merges
+ * whatever keys are present into the target mandal.
+ */
+
+export const submissionStatusSchema = z.enum(['pending', 'approved', 'rejected'])
+export type SubmissionStatus = z.infer<typeof submissionStatusSchema>
+
+export const submissionSchema = z.object({
+  id: z.uuid(),
+  type: z.enum(['new_mandal', 'edit_mandal']),
+  payload: z.record(z.string(), z.unknown()),
+  mandal_id: z.uuid().nullable(),
+  submitter_contact: z.string().nullable(),
+  status: submissionStatusSchema,
+  moderator_notes: z.string().nullable(),
+  submitted_at: z.string(),
+  reviewed_at: z.string().nullable(),
+})
+
+export type Submission = z.infer<typeof submissionSchema>
+
+export const submissionsListInputSchema = z.object({
+  status: submissionStatusSchema.default('pending'),
+  page: z.number().int().min(1).default(1),
+  pageSize: z.number().int().min(1).max(100).default(20),
+})
+
+export type SubmissionsListInput = z.infer<typeof submissionsListInputSchema>
+
+export const submissionsListOutputSchema = z.object({
+  items: z.array(submissionSchema),
+  total: z.number().int(),
+  page: z.number().int(),
+})
+
+export type SubmissionsListOutput = z.infer<typeof submissionsListOutputSchema>
+
+export const submissionsReviewInputSchema = z.object({
+  submissionId: z.uuid(),
+  decision: z.enum(['approve', 'reject']),
+  moderatorNotes: z.string().trim().max(1000).optional(),
+})
+
+export type SubmissionsReviewInput = z.infer<typeof submissionsReviewInputSchema>
+
+export const submissionsReviewOutputSchema = z.object({
+  status: z.enum(['approved', 'rejected']),
+  mandalSlug: z.string().nullable(),
+})
+
+export type SubmissionsReviewOutput = z.infer<typeof submissionsReviewOutputSchema>
+
+/** Static reference content (design-plan.md Milestone 9). */
+
+export const helplineCategorySchema = z.enum(['police', 'medical', 'traffic', 'bmc_control_room'])
+export type HelplineCategory = z.infer<typeof helplineCategorySchema>
+
+export const helplineSchema = z.object({
+  id: z.uuid(),
+  category: helplineCategorySchema,
+  area: z.string().nullable(),
+  phone: z.string(),
+  notes: z.string().nullable(),
+})
+
+export type Helpline = z.infer<typeof helplineSchema>
+
+export const helplinesListInputSchema = z.object({
+  area: z.string().optional(),
+})
+
+export type HelplinesListInput = z.infer<typeof helplinesListInputSchema>
+
+export const helplinesListOutputSchema = z.array(helplineSchema)
+
+export type HelplinesListOutput = z.infer<typeof helplinesListOutputSchema>
