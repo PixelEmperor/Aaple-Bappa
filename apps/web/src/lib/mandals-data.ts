@@ -21,9 +21,21 @@ export const getMandalBySlug = cache(async (slug: string) => {
   return publicCaller().mandals.getBySlug(mandalsGetBySlugInputSchema.parse({ slug }))
 })
 
+/**
+ * Feeds generateStaticParams, which build-time-fails the whole route (and
+ * thus the whole `next build`) if it throws — an empty list here just
+ * means zero mandal pages get prebuilt, same "not configured yet" fallback
+ * page.tsx and helplines/page.tsx already use for their own data. CI in
+ * particular has no Supabase credentials configured, so this always hits
+ * the catch there.
+ */
 export async function getAllMandalSlugs(): Promise<string[]> {
-  const { items } = await publicCaller().mandals.list(
-    mandalsListInputSchema.parse({ pageSize: 500 })
-  )
-  return items.map((mandal) => mandal.slug)
+  try {
+    const { items } = await publicCaller().mandals.list(
+      mandalsListInputSchema.parse({ pageSize: 500 })
+    )
+    return items.map((mandal) => mandal.slug)
+  } catch {
+    return []
+  }
 }
