@@ -42,13 +42,19 @@ Browser ──▶ Next.js App Router (Vercel, behind Cloudflare)
                     │  public procs use anon client + RLS
                     │  moderator procs use authed session + role check
                     ▼
-              Supabase (Postgres, Auth, Storage bucket `mandal-photos`)
+              Supabase (Postgres, Auth)   +   Cloudflare R2 (`mandal-photos`)
                     ▲
                     │ one-time / yearly, offline
               Python data-pipeline (scrape→clean→geocode→compress→import)
 
 Cross-cutting: Sentry (errors), PostHog (analytics), GitHub Actions (CI).
 ```
+
+**Update (post-M7):** mandal photos moved from Supabase Storage to Cloudflare R2 —
+zero egress fees ahead of festival-week traffic. See `src/lib/r2.ts` and
+`src/server/photo-upload.ts`; `supabase/migrations/0004_storage.sql` is left in
+place but superseded. `mandal-photos` below still refers to the same logical
+bucket/path structure (`submissions/{uuid}.{ext}`), just hosted on R2 now.
 
 Two Supabase client instances in the web app:
 - **Anon client** — RLS-restricted, used for public reads and public inserts to `submissions`.

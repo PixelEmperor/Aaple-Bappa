@@ -15,8 +15,7 @@ export function MandalCard({ mandal }: { mandal: Mandal }) {
         style={mandal.photo_url ? undefined : { background: mandalGradient(mandal.id) }}
       >
         {mandal.photo_url ? (
-          // next/image remotePatterns for the Supabase storage domain still need
-          // configuring in next.config.ts once a real project exists (Milestone 1).
+          // Allow-listed via CLOUDFLARE_R2_PUBLIC_URL in next.config.ts.
           <Image
             src={mandal.photo_url}
             alt={mandal.name}

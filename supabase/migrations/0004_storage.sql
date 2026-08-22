@@ -3,6 +3,11 @@
 -- bypasses RLS) after the submission API validates the upload — no direct
 -- client-to-bucket writes, so no insert/update/delete policy is defined
 -- here for anon/authenticated.
+--
+-- Superseded: photo uploads moved to Cloudflare R2 (zero egress fees ahead
+-- of festival-week traffic) — see src/lib/r2.ts and src/server/photo-upload.ts.
+-- Left in place rather than dropped, since it's harmless if unused and a
+-- past `supabase db push` may already have applied it to a live project.
 
 insert into storage.buckets (id, name, public)
 values ('mandal-photos', 'mandal-photos', true)
