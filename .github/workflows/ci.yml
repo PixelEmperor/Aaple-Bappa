@@ -16,11 +16,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Explicit version, not auto-detected from packageManager: that field
+      # lives in apps/web/package.json, but this step is a `uses:` action,
+      # not a `run:` step, so the `defaults.run.working-directory` above
+      # doesn't apply to it — it only ever looks at the repo root, where
+      # there's deliberately no package.json (single-package repo).
       - uses: pnpm/action-setup@v4
+        with:
+          version: 11.12.0
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: apps/web/pnpm-lock.yaml
 
