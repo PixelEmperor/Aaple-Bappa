@@ -40,6 +40,13 @@ jobs:
       - name: Format check
         run: pnpm format:check
 
+      # Next.js 16 generates ambient LayoutProps/PageProps types under
+      # .next/types on a build or dev run — on a fresh checkout, with no
+      # .next/ yet and Build running after Typecheck below, `tsc` has
+      # nothing to resolve those against without this step.
+      - name: Generate Next.js route types
+        run: pnpm exec next typegen
+
       - name: Typecheck
         run: pnpm typecheck
 
