@@ -1,8 +1,8 @@
 'use client'
 
+import Image from 'next/image'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { ModakIcon } from './ModakIcon'
 import { ThemeToggle } from './ThemeToggle'
 
 const NAV_LINKS = [
@@ -19,14 +19,30 @@ export function Header() {
       <div className="garland" aria-hidden="true" />
       <div className="mx-auto flex h-16 w-full max-w-6xl items-center gap-5 px-4 sm:px-6">
         <Link href="/" className="mr-auto flex items-center gap-2.5">
-          <ModakIcon className="size-7 flex-none text-accent" />
-          <span>
-            <span className="text-[1.1rem] font-bold tracking-tight">
-              Aaple <span className="text-accent">Bappa</span>
-            </span>
-            <span className="-mt-0.5 block text-[0.625rem] font-semibold tracking-widest text-ink-faint uppercase">
-              Mumbai · Ganesh Utsav
-            </span>
+          {/* Two theme variants of the same designed mark (the wordmark is
+              baked into the artwork itself, so no separate text label is
+              needed) — swapped via the `dark:` variant, not JS, so there's
+              no flash of the wrong one before hydration. */}
+          <Image
+            src="/aaple-bappa-logo-light.png"
+            alt="Aaple Bappa"
+            width={88}
+            height={88}
+            priority
+            className="h-11 w-11 flex-none dark:hidden"
+          />
+          <Image
+            src="/aaple-bappa-logo-dark.png"
+            alt="Aaple Bappa"
+            width={88}
+            height={88}
+            priority
+            className="hidden h-11 w-11 flex-none dark:block"
+          />
+          <span className="text-[0.625rem] font-semibold tracking-widest text-ink-faint uppercase">
+            Mumbai
+            <br />
+            Ganesh Utsav
           </span>
         </Link>
 
