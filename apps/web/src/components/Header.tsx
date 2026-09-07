@@ -24,7 +24,7 @@ export function Header() {
               needed) — swapped via the `dark:` variant, not JS, so there's
               no flash of the wrong one before hydration. */}
           <Image
-            src="/aaple-bappa-logo-light.png"
+            src="/aaple-bappa-logo-light.svg"
             alt="Aaple Bappa"
             width={88}
             height={88}
@@ -32,7 +32,7 @@ export function Header() {
             className="h-11 w-11 flex-none dark:hidden"
           />
           <Image
-            src="/aaple-bappa-logo-dark.png"
+            src="/aaple-bappa-logo-dark.svg"
             alt="Aaple Bappa"
             width={88}
             height={88}
