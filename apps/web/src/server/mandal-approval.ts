@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { generateSlug } from '@/shared/slug'
-import { TAGS } from '@/shared/schemas'
+import { TAGS, ZONES } from '@/shared/schemas'
 
 /**
  * Approve-time logic for submissions.review (design-plan.md Milestone 8),
@@ -15,6 +15,7 @@ import { TAGS } from '@/shared/schemas'
 export const storedNewMandalPayloadSchema = z.object({
   name: z.string(),
   area: z.string(),
+  zone: z.enum(ZONES).nullable().optional(),
   lat: z.number(),
   lng: z.number(),
   established_year: z.number().int().nullable(),

@@ -11,3 +11,6 @@ Thumbs.db
 __pycache__/
 *.pyc
 .venv/
+
+# Raw form exports (real submitter names/contacts — never committed)
+*.xlsx

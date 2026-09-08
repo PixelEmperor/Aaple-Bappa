@@ -211,6 +211,41 @@ export const submissionsReviewOutputSchema = z.object({
 
 export type SubmissionsReviewOutput = z.infer<typeof submissionsReviewOutputSchema>
 
+/**
+ * A moderator's editable view of a pending new_mandal submission's payload
+ * (design-plan.md Milestone 8 follow-up: "edit before approving"). Mirrors
+ * server/mandal-approval.ts's storedNewMandalPayloadSchema field-for-field
+ * (that one stays server-only since it's also used to parse trusted DB
+ * data) — this is the client-facing counterpart, validating moderator input
+ * instead.
+ */
+export const submissionEditablePayloadSchema = z.object({
+  name: z.string().trim().min(2).max(200),
+  area: z.string().trim().min(2).max(200),
+  zone: z.enum(ZONES).nullable(),
+  lat: z.number().min(-90).max(90),
+  lng: z.number().min(-180).max(180),
+  established_year: z.number().int().min(1800).max(new Date().getFullYear()).nullable(),
+  timings: z.string().trim().max(200).nullable(),
+  nearest_station: z.string().trim().max(200).nullable(),
+  description: z.string().trim().max(2000).nullable(),
+  tags: z.array(z.enum(TAGS)).nullable(),
+  official_contact: z.string().trim().max(200).nullable(),
+  is_public: z.boolean(),
+  photo_url: z.string().nullable(),
+})
+
+export type SubmissionEditablePayload = z.infer<typeof submissionEditablePayloadSchema>
+
+export const submissionsUpdatePayloadInputSchema = z.object({
+  submissionId: z.uuid(),
+  payload: submissionEditablePayloadSchema,
+})
+
+export type SubmissionsUpdatePayloadInput = z.infer<typeof submissionsUpdatePayloadInputSchema>
+
+export const submissionsUpdatePayloadOutputSchema = z.object({ ok: z.literal(true) })
+
 /** Static reference content (design-plan.md Milestone 9). */
 
 export const helplineCategorySchema = z.enum(['police', 'medical', 'traffic', 'bmc_control_room'])

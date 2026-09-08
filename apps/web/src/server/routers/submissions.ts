@@ -10,6 +10,8 @@ import {
   submissionsListOutputSchema,
   submissionsReviewInputSchema,
   submissionsReviewOutputSchema,
+  submissionsUpdatePayloadInputSchema,
+  submissionsUpdatePayloadOutputSchema,
 } from '@/shared/schemas'
 import { findPossibleDuplicates } from '../duplicate-check'
 import { geocodeAddress } from '../geocode'
@@ -154,6 +156,50 @@ export const submissionsRouter = router({
       }
 
       return { items: data ?? [], total: count ?? 0, page: input.page }
+    }),
+
+  /**
+   * Lets a moderator correct a pending submission's payload before approving
+   * it (design-plan.md Milestone 8 follow-up) — e.g. fixing an imprecise
+   * pin, filling in zone, or cleaning up a bulk-imported row. Only touches
+   * `payload`; approve/reject still go through `review` below, which reads
+   * whatever's currently stored — so edits just need to land before that call.
+   */
+  updatePayload: moderatorProcedure
+    .input(submissionsUpdatePayloadInputSchema)
+    .output(submissionsUpdatePayloadOutputSchema)
+    .mutation(async ({ input }) => {
+      const supabase = createSupabaseServiceRoleClient()
+
+      const { data: submission, error: fetchError } = await supabase
+        .from('submissions')
+        .select('status')
+        .eq('id', input.submissionId)
+        .maybeSingle()
+
+      if (fetchError) {
+        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: fetchError.message })
+      }
+      if (!submission) {
+        throw new TRPCError({ code: 'NOT_FOUND' })
+      }
+      if (submission.status !== 'pending') {
+        throw new TRPCError({
+          code: 'CONFLICT',
+          message: 'Only pending submissions can be edited.',
+        })
+      }
+
+      const { error: updateError } = await supabase
+        .from('submissions')
+        .update({ payload: input.payload })
+        .eq('id', input.submissionId)
+
+      if (updateError) {
+        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: updateError.message })
+      }
+
+      return { ok: true as const }
     }),
 
   /**
