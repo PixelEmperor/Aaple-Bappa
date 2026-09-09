@@ -34,7 +34,7 @@
     "supercluster": "9.0.0",
     "superjson": "^2.2.6",
     "use-supercluster": "1.2.0",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
