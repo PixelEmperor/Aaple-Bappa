@@ -1,6 +1,5 @@
 import { TRPCError } from '@trpc/server'
 import { randomUUID } from 'node:crypto'
-import { headers } from 'next/headers'
 import { revalidatePath } from 'next/cache'
 import { createSupabaseServiceRoleClient } from '@/lib/supabase/service-role'
 import {
@@ -13,7 +12,10 @@ import {
   submissionsUpdatePayloadInputSchema,
   submissionsUpdatePayloadOutputSchema,
 } from '@/shared/schemas'
-import { findPossibleDuplicates } from '../duplicate-check'
+import { slugify } from '@/shared/slug'
+import { clientIp } from '../client-ip'
+import { findPossibleDuplicates, type DuplicateCandidate } from '../duplicate-check'
+import { internalError } from '../errors'
 import { geocodeAddress } from '../geocode'
 import { resolveGoogleMapsLink } from '../google-maps-link'
 import { buildMandalEditPatch, buildNewMandalInsert, formatAuditTrail } from '../mandal-approval'
@@ -21,13 +23,6 @@ import { paginationRange } from '../mandals-query'
 import { uploadSubmissionPhoto } from '../photo-upload'
 import { checkRateLimit } from '../rate-limit'
 import { moderatorProcedure, publicProcedure, router } from '../trpc'
-
-async function clientIp(): Promise<string> {
-  const headerList = await headers()
-  const forwardedFor = headerList.get('x-forwarded-for')
-  if (forwardedFor) return forwardedFor.split(',')[0].trim()
-  return headerList.get('x-real-ip') ?? 'unknown'
-}
 
 export const submissionsRouter = router({
   /**
@@ -39,7 +34,12 @@ export const submissionsRouter = router({
   create: publicProcedure
     .input(submissionsCreateInputSchema)
     .output(submissionsCreateOutputSchema)
-    .mutation(async ({ ctx, input }) => {
+    .mutation(async ({ input }) => {
+      // Both keys are checked because neither is sufficient alone: session_id
+      // is client-generated (src/lib/session-id.ts) so a determined caller
+      // just mints a new one, and the IP is shared by everyone behind a
+      // carrier NAT. See ../client-ip.ts for why the IP isn't simply
+      // x-forwarded-for's first entry.
       const ip = await clientIp()
       const [sessionAllowed, ipAllowed] = await Promise.all([
         checkRateLimit(`session:${input.session_id}`),
@@ -51,6 +51,15 @@ export const submissionsRouter = router({
           message: 'Too many submissions from you recently — please try again in a while.',
         })
       }
+
+      // Service-role, not ctx.supabase: `submissions` has no grant for
+      // anon/authenticated at all (supabase/migrations/0009_lock_down_privileges.sql).
+      // It used to, via the submissions_public_insert RLS policy, which meant
+      // anyone with the public anon key could POST rows straight to
+      // /rest/v1/submissions — skipping this rate limiter, the Zod input
+      // schema, the image validation, and the duplicate check. This procedure
+      // is now the only way in.
+      const supabase = createSupabaseServiceRoleClient()
 
       let location: { lat: number; lng: number }
       if (input.payload.location.kind === 'pin') {
@@ -77,17 +86,26 @@ export const submissionsRouter = router({
       }
 
       if (!input.confirm_duplicate) {
-        // RLS restricts this to public/verified mandals (mandals_public_read,
-        // supabase/migrations/0003_rls.sql) — a known v1 limit, see
-        // src/server/duplicate-check.ts.
-        const { data: candidates, error } = await ctx.supabase
-          .from('mandals')
-          .select('id, name, slug, area, lat, lng')
+        // Candidate narrowing happens in SQL now (mandal_duplicate_candidates,
+        // supabase/migrations/0010_duplicate_candidates.sql). The previous
+        // unfiltered `select * from mandals` was silently capped by
+        // config.toml's max_rows = 1000 and, running under the anon client,
+        // couldn't see private or flagged mandals at all — so it missed
+        // duplicates on both counts. Scoring below is unchanged.
+        const { data: candidates, error } = await supabase.rpc('mandal_duplicate_candidates', {
+          p_name: input.payload.name,
+          p_lat: location.lat,
+          p_lng: location.lng,
+        })
         if (error) {
-          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: error.message })
+          throw internalError('submissions.create duplicate lookup', error)
         }
 
-        const matches = findPossibleDuplicates(input.payload.name, location, candidates ?? [])
+        const matches = findPossibleDuplicates(
+          input.payload.name,
+          location,
+          (candidates ?? []) as DuplicateCandidate[]
+        )
         if (matches.length > 0) {
           return { status: 'possible_duplicate' as const, matches }
         }
@@ -112,12 +130,8 @@ export const submissionsRouter = router({
         photo_url: photoUrl,
       }
 
-      // Explicit id, not .select() after insert: anon has no SELECT policy
-      // on submissions (submissions_public_insert is insert-only,
-      // supabase/migrations/0003_rls.sql), so reading the row back would
-      // silently return nothing under RLS.
       const submissionId = randomUUID()
-      const { error: insertError } = await ctx.supabase.from('submissions').insert({
+      const { error: insertError } = await supabase.from('submissions').insert({
         id: submissionId,
         type: 'new_mandal',
         payload,
@@ -126,7 +140,7 @@ export const submissionsRouter = router({
       })
 
       if (insertError) {
-        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: insertError.message })
+        throw internalError('submissions.create insert', insertError)
       }
 
       return { status: 'created' as const, submissionId }
@@ -139,10 +153,9 @@ export const submissionsRouter = router({
     .query(async ({ input }) => {
       const { from, to } = paginationRange(input.page, input.pageSize)
 
-      // Service-role, not ctx.supabase: submissions has no select policy for
-      // anon/authenticated (submissions_public_insert is insert-only,
-      // supabase/migrations/0003_rls.sql) — the moderatorProcedure check
-      // upstream is what authorizes this read, not RLS.
+      // Service-role, not ctx.supabase: submissions is service-role-only
+      // (supabase/migrations/0009_lock_down_privileges.sql) — the
+      // moderatorProcedure check upstream is what authorizes this read.
       const supabase = createSupabaseServiceRoleClient()
       const { data, count, error } = await supabase
         .from('submissions')
@@ -152,7 +165,7 @@ export const submissionsRouter = router({
         .range(from, to)
 
       if (error) {
-        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: error.message })
+        throw internalError('submissions.list', error)
       }
 
       return { items: data ?? [], total: count ?? 0, page: input.page }
@@ -178,7 +191,7 @@ export const submissionsRouter = router({
         .maybeSingle()
 
       if (fetchError) {
-        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: fetchError.message })
+        throw internalError('submissions.updatePayload fetch', fetchError)
       }
       if (!submission) {
         throw new TRPCError({ code: 'NOT_FOUND' })
@@ -196,7 +209,7 @@ export const submissionsRouter = router({
         .eq('id', input.submissionId)
 
       if (updateError) {
-        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: updateError.message })
+        throw internalError('submissions.updatePayload update', updateError)
       }
 
       return { ok: true as const }
@@ -204,7 +217,7 @@ export const submissionsRouter = router({
 
   /**
    * Approve/reject a pending submission (design-plan.md Milestone 8). Approve
-   * writes go through a Postgres function (supabase/migrations/0006_submission_review.sql)
+   * writes go through a Postgres function (supabase/migrations/0009_lock_down_privileges.sql)
    * so the mandals write and the submissions status update commit atomically —
    * slug generation and edit-patch whitelisting stay in JS (../mandal-approval),
    * only the already-decided row is handed to the function.
@@ -222,7 +235,7 @@ export const submissionsRouter = router({
         .maybeSingle()
 
       if (fetchError) {
-        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: fetchError.message })
+        throw internalError('submissions.review fetch', fetchError)
       }
       if (!submission) {
         throw new TRPCError({ code: 'NOT_FOUND' })
@@ -245,7 +258,7 @@ export const submissionsRouter = router({
           .eq('id', input.submissionId)
 
         if (rejectError) {
-          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: rejectError.message })
+          throw internalError('submissions.review reject', rejectError)
         }
 
         return { status: 'rejected' as const, mandalSlug: null }
@@ -254,12 +267,20 @@ export const submissionsRouter = router({
       let mandalSlug: string | null
 
       if (submission.type === 'new_mandal') {
+        // Only slugs that could actually collide, rather than every slug in
+        // the table: generateSlug only ever compares against `slugify(name)`
+        // and suffixed forms of it. The unfiltered read this replaces was
+        // capped by config.toml's max_rows = 1000, so past that it could
+        // hand generateSlug an incomplete set and mint a slug that then
+        // failed the mandals_slug_key unique index.
+        const slugPrefix = slugify(submission.payload?.name ?? '')
         const { data: existingRows, error: slugFetchError } = await supabase
           .from('mandals')
           .select('slug')
+          .like('slug', `${slugPrefix}%`)
 
         if (slugFetchError) {
-          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: slugFetchError.message })
+          throw internalError('submissions.review slug lookup', slugFetchError)
         }
 
         const existingSlugs = new Set((existingRows ?? []).map((row) => row.slug as string))
@@ -275,7 +296,7 @@ export const submissionsRouter = router({
         )
 
         if (rpcError) {
-          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: rpcError.message })
+          throw internalError('submissions.review approve new_mandal', rpcError)
         }
         mandalSlug = slug
       } else {
@@ -293,14 +314,24 @@ export const submissionsRouter = router({
           .maybeSingle()
 
         if (mandalFetchError) {
-          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: mandalFetchError.message })
+          throw internalError('submissions.review mandal fetch', mandalFetchError)
         }
         if (!existingMandal) {
           throw new TRPCError({ code: 'NOT_FOUND', message: 'Target mandal no longer exists.' })
         }
 
-        const patch = buildMandalEditPatch(submission.payload)
-        const notes = formatAuditTrail(existingMandal, patch, input.moderatorNotes)
+        const { patch, dropped } = buildMandalEditPatch(submission.payload)
+        if (Object.keys(patch).length === 0) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message:
+              dropped.length > 0
+                ? `This submission proposes no valid changes (rejected: ${dropped.join(', ')}).`
+                : 'This submission proposes no changes.',
+          })
+        }
+
+        const notes = formatAuditTrail(existingMandal, patch, input.moderatorNotes, dropped)
 
         const { data: slug, error: rpcError } = await supabase.rpc(
           'approve_edit_mandal_submission',
@@ -313,7 +344,7 @@ export const submissionsRouter = router({
         )
 
         if (rpcError) {
-          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: rpcError.message })
+          throw internalError('submissions.review approve edit_mandal', rpcError)
         }
         mandalSlug = slug
       }

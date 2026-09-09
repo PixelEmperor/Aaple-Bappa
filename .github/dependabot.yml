@@ -1,0 +1,27 @@
+version: 2
+
+updates:
+  # apps/web, not the repo root: this is a single-package repo with no root
+  # package.json (see .github/workflows/ci.yml's note).
+  - package-ecosystem: npm
+    directory: /apps/web
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for routine patch/minor bumps; security fixes and majors still
+      # arrive as their own PRs so they're not buried in a batch.
+      dev-dependencies:
+        dependency-type: development
+        update-types: ['minor', 'patch']
+
+  - package-ecosystem: pip
+    directory: /data-pipeline
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

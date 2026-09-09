@@ -19,6 +19,13 @@ const ALLOWED_HOSTS = new Set([
 // of their own, just an opaque id that redirects to the canonical URL.
 const SHORT_LINK_HOSTS = new Set(['maps.app.goo.gl', 'goo.gl'])
 
+// A submitter's request is blocked on this fetch, and fetch() has no default
+// timeout — so without a deadline a slow or hanging upstream holds a
+// serverless invocation open until the platform kills it, which is a cheap
+// way to exhaust concurrency. Short-link expansion is a single redirect
+// lookup; if it hasn't answered in 5s it isn't going to.
+const FETCH_TIMEOUT_MS = 5000
+
 function parseAllowedGoogleUrl(url: string): URL | null {
   let parsed: URL
   try {
@@ -49,7 +56,10 @@ export async function resolveGoogleMapsLink(
 
   let response: Response
   try {
-    response = await fetch(parsed.toString(), { redirect: 'follow' })
+    response = await fetch(parsed.toString(), {
+      redirect: 'follow',
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    })
   } catch {
     return null
   }

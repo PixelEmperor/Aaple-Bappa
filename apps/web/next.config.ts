@@ -1,5 +1,6 @@
 import type { NextConfig } from 'next'
 import { withSentryConfig } from '@sentry/nextjs'
+import { securityHeaders } from './src/lib/security-headers'
 
 // next/image only fetches from allow-listed remote hosts — the R2 public
 // bucket domain (CLOUDFLARE_R2_PUBLIC_URL) has to be one of them. Derived
@@ -21,6 +22,16 @@ const nextConfig: NextConfig = {
   images: {
     remotePatterns: r2ImageRemotePatterns(),
   },
+
+  // Applied to every response, including static and ISR pages
+  // (src/lib/security-headers.ts). Set here rather than in proxy.ts, whose
+  // matcher only covers /admin.
+  async headers() {
+    return [{ source: '/:path*', headers: securityHeaders() }]
+  },
+
+  // Don't advertise the framework version to scanners.
+  poweredByHeader: false,
 }
 
 // Source-map upload (design-plan.md Milestone 10) only activates once

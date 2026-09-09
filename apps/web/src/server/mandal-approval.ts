@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { generateSlug } from '@/shared/slug'
-import { TAGS, ZONES } from '@/shared/schemas'
+import { photoUrlSchema, TAGS, ZONES } from '@/shared/schemas'
 
 /**
  * Approve-time logic for submissions.review (design-plan.md Milestone 8),
@@ -25,7 +25,7 @@ export const storedNewMandalPayloadSchema = z.object({
   tags: z.array(z.enum(TAGS)).nullable(),
   official_contact: z.string().nullable(),
   is_public: z.boolean(),
-  photo_url: z.string().nullable(),
+  photo_url: photoUrlSchema.nullable(),
 })
 
 export type StoredNewMandalPayload = z.infer<typeof storedNewMandalPayloadSchema>
@@ -49,6 +49,34 @@ export const EDITABLE_MANDAL_COLUMNS = [
   'is_public',
 ] as const
 
+/**
+ * Per-column value validation for an edit patch. Whitelisting the column
+ * *names* alone (which is all buildMandalEditPatch used to do) leaves the
+ * values completely untyped, and these payloads are not trusted input: an
+ * edit_mandal row's `payload` is whatever its submitter wrote. So a patch
+ * could carry a `photo_url` of `javascript:…`, a megabyte-long `name`, or
+ * `tags` outside the TAGS enum, and approving it merged all of that
+ * straight into a live public mandal row.
+ *
+ * Bounds mirror submissionEditablePayloadSchema in shared/schemas.ts.
+ */
+const editableMandalColumnSchemas = {
+  name: z.string().trim().min(2).max(200),
+  area: z.string().trim().min(2).max(200),
+  zone: z.enum(ZONES).nullable(),
+  lat: z.number().min(-90).max(90),
+  lng: z.number().min(-180).max(180),
+  established_year: z.number().int().min(1800).max(new Date().getFullYear()).nullable(),
+  description: z.string().trim().max(2000).nullable(),
+  history: z.string().trim().max(5000).nullable(),
+  nearest_station: z.string().trim().max(200).nullable(),
+  tags: z.array(z.enum(TAGS)).max(TAGS.length).nullable(),
+  timings: z.string().trim().max(200).nullable(),
+  official_contact: z.string().trim().max(200).nullable(),
+  photo_url: photoUrlSchema.nullable(),
+  is_public: z.boolean(),
+} satisfies Record<(typeof EDITABLE_MANDAL_COLUMNS)[number], z.ZodType>
+
 /** Builds the row for approve_new_mandal_submission's `p_mandal` argument. */
 export function buildNewMandalInsert(payload: unknown, existingSlugs: ReadonlySet<string>) {
   const parsed = storedNewMandalPayloadSchema.parse(payload)
@@ -58,17 +86,38 @@ export function buildNewMandalInsert(payload: unknown, existingSlugs: ReadonlySe
   }
 }
 
-/** Whitelists known mandal columns out of an edit submission's raw payload. */
-export function buildMandalEditPatch(payload: unknown): Record<string, unknown> {
-  if (typeof payload !== 'object' || payload === null) return {}
+/**
+ * Whitelists known mandal columns out of an edit submission's raw payload
+ * *and* validates each value against editableMandalColumnSchemas above.
+ *
+ * A present-but-invalid column is dropped rather than throwing: an edit
+ * submission is a bag of independent field suggestions, so one unusable
+ * field shouldn't block a moderator from approving the rest. Rejected
+ * columns come back in `dropped` so review() can record them in the audit
+ * trail instead of losing them silently.
+ */
+export function buildMandalEditPatch(payload: unknown): {
+  patch: Record<string, unknown>
+  dropped: string[]
+} {
+  if (typeof payload !== 'object' || payload === null) return { patch: {}, dropped: [] }
 
+  const source = payload as Record<string, unknown>
   const patch: Record<string, unknown> = {}
+  const dropped: string[] = []
+
   for (const column of EDITABLE_MANDAL_COLUMNS) {
-    if (column in payload) {
-      patch[column] = (payload as Record<string, unknown>)[column]
+    if (!(column in source)) continue
+
+    const parsed = editableMandalColumnSchemas[column].safeParse(source[column])
+    if (parsed.success) {
+      patch[column] = parsed.data
+    } else {
+      dropped.push(column)
     }
   }
-  return patch
+
+  return { patch, dropped }
 }
 
 /**
@@ -80,9 +129,19 @@ export function buildMandalEditPatch(payload: unknown): Record<string, unknown> 
 export function formatAuditTrail(
   priorMandal: Record<string, unknown>,
   patch: Record<string, unknown>,
-  moderatorNotes?: string
+  moderatorNotes?: string,
+  droppedColumns: readonly string[] = []
 ): string {
   const priorValues = Object.fromEntries(Object.keys(patch).map((key) => [key, priorMandal[key]]))
-  const trail = `[prior values overwritten: ${JSON.stringify(priorValues)}]`
+  const parts = [`[prior values overwritten: ${JSON.stringify(priorValues)}]`]
+
+  // Columns buildMandalEditPatch refused: recorded rather than dropped
+  // quietly, so a moderator can see the submission proposed something the
+  // patch schema wouldn't accept.
+  if (droppedColumns.length > 0) {
+    parts.push(`[rejected as invalid: ${droppedColumns.join(', ')}]`)
+  }
+
+  const trail = parts.join(' ')
   return moderatorNotes ? `${moderatorNotes}\n\n${trail}` : trail
 }

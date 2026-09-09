@@ -1,5 +1,5 @@
-import { TRPCError } from '@trpc/server'
 import { helplinesListInputSchema, helplinesListOutputSchema } from '@/shared/schemas'
+import { internalError } from '../errors'
 import { filterHelplinesByArea } from '../helplines-query'
 import { publicProcedure, router } from '../trpc'
 
@@ -15,7 +15,7 @@ export const helplinesRouter = router({
         .order('category', { ascending: true })
 
       if (error) {
-        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: error.message })
+        throw internalError('helplines.list', error)
       }
 
       return filterHelplinesByArea(data ?? [], input.area)

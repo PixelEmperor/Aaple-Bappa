@@ -5,6 +5,7 @@ import {
   mandalsListInputSchema,
   mandalsListOutputSchema,
 } from '@/shared/schemas'
+import { internalError } from '../errors'
 import { buildMandalFilters, paginationRange } from '../mandals-query'
 import { publicProcedure, router } from '../trpc'
 
@@ -35,7 +36,7 @@ export const mandalsRouter = router({
       const { data, count, error } = await query.order('name', { ascending: true }).range(from, to)
 
       if (error) {
-        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: error.message })
+        throw internalError('mandals.list', error)
       }
 
       return {
@@ -57,7 +58,7 @@ export const mandalsRouter = router({
         .maybeSingle()
 
       if (error) {
-        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: error.message })
+        throw internalError('mandals.getBySlug', error)
       }
       if (!data) {
         throw new TRPCError({ code: 'NOT_FOUND' })

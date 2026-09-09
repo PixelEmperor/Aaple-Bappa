@@ -53,16 +53,72 @@ describe('buildMandalEditPatch', () => {
   it('picks only known mandal columns present in the payload', () => {
     expect(
       buildMandalEditPatch({ name: 'New Name', timings: '7 AM – 10 PM', not_a_column: 'ignored' })
-    ).toEqual({ name: 'New Name', timings: '7 AM – 10 PM' })
+    ).toEqual({ patch: { name: 'New Name', timings: '7 AM – 10 PM' }, dropped: [] })
   })
 
   it('omits columns absent from the payload rather than nulling them', () => {
-    expect(buildMandalEditPatch({ name: 'New Name' })).toEqual({ name: 'New Name' })
+    expect(buildMandalEditPatch({ name: 'New Name' })).toEqual({
+      patch: { name: 'New Name' },
+      dropped: [],
+    })
   })
 
   it('returns an empty patch for a non-object payload', () => {
-    expect(buildMandalEditPatch(null)).toEqual({})
-    expect(buildMandalEditPatch('not an object')).toEqual({})
+    expect(buildMandalEditPatch(null)).toEqual({ patch: {}, dropped: [] })
+    expect(buildMandalEditPatch('not an object')).toEqual({ patch: {}, dropped: [] })
+  })
+
+  /**
+   * An edit submission's payload is submitter-controlled, so whitelisting
+   * the column *names* isn't enough on its own — these are the values that
+   * used to sail through untouched and get merged into a live public row.
+   */
+  it('drops a javascript: photo_url rather than merging a stored-XSS payload', () => {
+    expect(buildMandalEditPatch({ photo_url: 'javascript:alert(document.cookie)' })).toEqual({
+      patch: {},
+      dropped: ['photo_url'],
+    })
+  })
+
+  it('drops a non-https photo_url', () => {
+    expect(buildMandalEditPatch({ photo_url: 'http://example.com/p.jpg' }).dropped).toEqual([
+      'photo_url',
+    ])
+    expect(buildMandalEditPatch({ photo_url: 'data:image/svg+xml,<svg/>' }).dropped).toEqual([
+      'photo_url',
+    ])
+  })
+
+  it('drops an over-long name', () => {
+    expect(buildMandalEditPatch({ name: 'x'.repeat(5000) }).dropped).toEqual(['name'])
+  })
+
+  it('drops tags outside the predefined list', () => {
+    expect(buildMandalEditPatch({ tags: ['eco-friendly', 'made-up'] }).dropped).toEqual(['tags'])
+    expect(buildMandalEditPatch({ tags: ['eco-friendly'] }).patch).toEqual({
+      tags: ['eco-friendly'],
+    })
+  })
+
+  it('drops out-of-range coordinates and a bogus zone', () => {
+    expect(buildMandalEditPatch({ lat: 999, lng: -1000 }).dropped).toEqual(['lat', 'lng'])
+    expect(buildMandalEditPatch({ zone: 'Atlantis' }).dropped).toEqual(['zone'])
+  })
+
+  it('drops wrong-typed values instead of passing them to Postgres', () => {
+    expect(buildMandalEditPatch({ is_public: 'yes', established_year: 'old' }).dropped).toEqual([
+      'established_year',
+      'is_public',
+    ])
+  })
+
+  it('keeps the valid columns of a partly-invalid payload', () => {
+    const { patch, dropped } = buildMandalEditPatch({
+      name: 'Perfectly Fine Name',
+      photo_url: 'javascript:alert(1)',
+    })
+    expect(patch).toEqual({ name: 'Perfectly Fine Name' })
+    expect(dropped).toEqual(['photo_url'])
   })
 })
 
@@ -73,6 +129,16 @@ describe('formatAuditTrail', () => {
       { name: 'New Name' }
     )
     expect(trail).toBe('[prior values overwritten: {"name":"Old Name"}]')
+  })
+
+  it('records columns the patch schema rejected so they are not lost silently', () => {
+    const trail = formatAuditTrail({ name: 'Old Name' }, { name: 'New Name' }, undefined, [
+      'photo_url',
+      'tags',
+    ])
+    expect(trail).toBe(
+      '[prior values overwritten: {"name":"Old Name"}] [rejected as invalid: photo_url, tags]'
+    )
   })
 
   it('appends the audit trail after the moderator’s own notes', () => {

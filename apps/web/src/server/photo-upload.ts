@@ -4,6 +4,7 @@ import { TRPCError } from '@trpc/server'
 import { randomUUID } from 'node:crypto'
 import { requireEnv } from '@/lib/env'
 import { createR2Client } from '@/lib/r2'
+import { internalError } from './errors'
 import { IMAGE_EXTENSION_BY_MIME_TYPE, parseAndValidateImageDataUrl } from './image-validation'
 
 /**
@@ -30,10 +31,11 @@ export async function uploadSubmissionPhoto(dataUrl: string): Promise<string> {
       })
     )
   } catch (error) {
-    throw new TRPCError({
-      code: 'INTERNAL_SERVER_ERROR',
-      message: `Photo upload failed: ${error instanceof Error ? error.message : 'unknown error'}`,
-    })
+    // The S3 SDK's message names the bucket and endpoint, and on a
+    // misconfiguration says which credential was rejected — none of which
+    // belongs in a response to an anonymous submitter. Sentry gets the real
+    // one (../errors.ts).
+    throw internalError('photo-upload', error instanceof Error ? error : { message: 'unknown' })
   }
 
   // CLOUDFLARE_R2_PUBLIC_URL is the bucket's public base — either its

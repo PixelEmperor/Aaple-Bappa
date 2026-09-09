@@ -414,6 +414,32 @@ Tasks:
 - **Security (OWASP + org):** server-side validation on every write proc; parameterized queries only
   (Supabase client handles this); service-role key server-only; rate-limit all public writes; RLS as
   defense-in-depth. If any live credential is ever committed, rotate immediately.
+  - **Database privileges are explicit, never implicit.** Every `security definer` function is
+    `revoke`d from `public, anon, authenticated` and granted only to `service_role`, and every one
+    pins `set search_path`. Postgres grants EXECUTE to PUBLIC by default and PostgREST exposes
+    public-schema functions as `/rest/v1/rpc/<name>`, so a definer-rights function left at its
+    default grants is callable by anyone holding the (public) anon key — which for the approve
+    functions meant arbitrary writes to `mandals` with no login at all. See
+    `supabase/migrations/0009_lock_down_privileges.sql`. A new migration that adds a function must
+    revoke it too; 0009 sets `alter default privileges` to make the safe case the default.
+  - **The tRPC procedures are the only write path.** `submissions` carries no anon/authenticated
+    grant, so public writes can't bypass the rate limiter and Zod schemas by POSTing PostgREST
+    directly.
+  - **Never trust a payload's values because its keys were whitelisted.** `edit_mandal` payloads are
+    submitter-authored; `buildMandalEditPatch` validates every column's value, not just its name.
+  - **Client-supplied identifiers aren't rate-limit keys on their own.** `session_id` comes from
+    localStorage, and `X-Forwarded-For`'s *first* entry is caller-controlled behind a proxy — take
+    the edge's own header or the last hop (`src/server/client-ip.ts`).
+  - **CSRF:** cookie-authenticated mutations get an Origin check (`src/server/same-origin.ts`); a
+    JSON content-type is not a CSRF defense, since `text/plain` skips preflight and the fetch
+    adapter parses the body anyway.
+  - **Response headers** (CSP, HSTS, frame-ancestors, Referrer-Policy, Permissions-Policy) are set
+    in `next.config.ts` from `src/lib/security-headers.ts`, which documents why `script-src` keeps
+    `'unsafe-inline'` (nonces would force dynamic rendering and defeat ISR).
+  - **Internal errors don't reach clients.** Postgres/S3 messages go to Sentry via
+    `src/server/errors.ts`; callers get a fixed string.
+  - **CI gates:** `pnpm audit --prod --audit-level high` plus gitleaks secret scanning, and
+    Dependabot for npm/pip/actions.
 - **Code quality (SonarQube "Sonar way"):** zero new bugs/vulns/hotspots, low cognitive complexity,
   ≤3% duplication, no magic numbers, explicit error handling. Add SonarQube (or SonarCloud free for
   public repos) as a CI check before launch if desired.

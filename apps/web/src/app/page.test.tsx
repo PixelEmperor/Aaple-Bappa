@@ -1,3 +1,9 @@
+/**
+ * @vitest-environment jsdom
+ *
+ * The only suite here that renders components, so the only one that needs a
+ * DOM — vitest.config.mts defaults to the node environment.
+ */
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import Home from './page'

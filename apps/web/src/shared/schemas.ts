@@ -26,8 +26,46 @@ export const ZONES = [
 
 export const TAGS = ['eco-friendly', 'tallest', 'oldest', 'richest', 'family-friendly'] as const
 
+/**
+ * Photo size cap (scope.md §7/§8). Lives here rather than in
+ * server/image-validation.ts because both sides need it: the byte check
+ * after base64-decoding, and the data-URL length bound below that rejects
+ * oversized payloads before they're decoded at all.
+ */
+export const MAX_IMAGE_BYTES = 2 * 1024 * 1024
+
+// Base64 encodes 3 bytes as 4 characters; the slack covers the
+// `data:image/webp;base64,` prefix and any padding.
+const BASE64_CHARS_PER_BYTE = 4 / 3
+const DATA_URL_PREFIX_SLACK = 64
+export const MAX_IMAGE_DATA_URL_LENGTH =
+  Math.ceil(MAX_IMAGE_BYTES * BASE64_CHARS_PER_BYTE) + DATA_URL_PREFIX_SLACK
+
 export const mandalSourceSchema = z.enum(['seed', 'crowdsourced', 'official'])
 export const verificationStatusSchema = z.enum(['unverified', 'verified', 'flagged'])
+
+/**
+ * A stored photo URL. Anywhere a photo_url can be *written* has to go
+ * through this rather than a bare z.string(): these values end up in `src`
+ * attributes and OpenGraph tags, and `javascript:`/`data:` URLs in that
+ * position are the classic stored-XSS payload. Restricting to https also
+ * rules out mixed-content warnings on the detail page.
+ *
+ * Not applied to reads (mandalSchema.photo_url stays a plain string) —
+ * tightening that would make a single bad legacy row fail the whole
+ * `mandals.list` output parse and blank the directory.
+ */
+export const photoUrlSchema = z
+  .string()
+  .trim()
+  .max(2048)
+  .refine((value) => {
+    try {
+      return new URL(value).protocol === 'https:'
+    } catch {
+      return false
+    }
+  }, 'Photo URL must be an absolute https URL')
 
 export const mandalSchema = z.object({
   id: z.uuid(),
@@ -55,8 +93,11 @@ export const mandalSchema = z.object({
 export type Mandal = z.infer<typeof mandalSchema>
 
 export const mandalsListInputSchema = z.object({
-  search: z.string().trim().min(1).optional(),
-  area: z.string().optional(),
+  // Bounded like every other free-text input: an unbounded string here goes
+  // straight into an `ilike` pattern, so the cap is what stops a caller
+  // handing Postgres a megabyte-long pattern to scan against every row.
+  search: z.string().trim().min(1).max(200).optional(),
+  area: z.string().trim().max(200).optional(),
   zone: z.enum(ZONES).optional(),
   tags: z.array(z.enum(TAGS)).optional(),
   page: z.number().int().min(1).default(1),
@@ -78,7 +119,7 @@ export const mandalsListOutputSchema = z.object({
 export type MandalsListOutput = z.infer<typeof mandalsListOutputSchema>
 
 export const mandalsGetBySlugInputSchema = z.object({
-  slug: z.string().min(1),
+  slug: z.string().trim().min(1).max(200),
 })
 
 /**
@@ -117,7 +158,14 @@ export const newMandalPayloadSchema = z.object({
   // A compressed (client-side, browser canvas) image as a data: URL — the
   // server re-validates type/size from the actual bytes regardless
   // (src/server/image-validation.ts), never trusting this alone.
-  photo_data_url: z.string().optional(),
+  //
+  // The length cap matters independently of the MAX_IMAGE_BYTES check, which
+  // can only run *after* Buffer.from(..., 'base64') has already materialized
+  // the decoded image in memory — so anything that could never pass
+  // validation is rejected here, before it's decoded. Vercel's own 4.5MB
+  // request-body limit would also catch this in production, but the bound
+  // belongs in the contract, not the platform.
+  photo_data_url: z.string().max(MAX_IMAGE_DATA_URL_LENGTH).optional(),
 })
 
 export type NewMandalPayload = z.infer<typeof newMandalPayloadSchema>
@@ -232,7 +280,7 @@ export const submissionEditablePayloadSchema = z.object({
   tags: z.array(z.enum(TAGS)).nullable(),
   official_contact: z.string().trim().max(200).nullable(),
   is_public: z.boolean(),
-  photo_url: z.string().nullable(),
+  photo_url: photoUrlSchema.nullable(),
 })
 
 export type SubmissionEditablePayload = z.infer<typeof submissionEditablePayloadSchema>
@@ -262,7 +310,7 @@ export const helplineSchema = z.object({
 export type Helpline = z.infer<typeof helplineSchema>
 
 export const helplinesListInputSchema = z.object({
-  area: z.string().optional(),
+  area: z.string().trim().max(200).optional(),
 })
 
 export type HelplinesListInput = z.infer<typeof helplinesListInputSchema>

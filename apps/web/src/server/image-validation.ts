@@ -4,9 +4,14 @@
  * client-claimed MIME type alone — it's sniffed from the actual bytes.
  */
 
+import { MAX_IMAGE_BYTES } from '@/shared/schemas'
+
 export type ImageMimeType = 'image/jpeg' | 'image/png' | 'image/webp'
 
-export const MAX_IMAGE_BYTES = 2 * 1024 * 1024 // 2MB, scope §7/§8
+// Re-exported so callers and tests keep importing the cap from the module
+// that enforces it; the value itself is shared with the input schema's
+// data-URL length bound (src/shared/schemas.ts).
+export { MAX_IMAGE_BYTES }
 
 const DATA_URL_PATTERN = /^data:(image\/(?:jpeg|png|webp));base64,([a-zA-Z0-9+/]+=?=?)$/
 

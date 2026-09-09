@@ -10,6 +10,10 @@ import 'server-only'
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search'
 const USER_AGENT = 'AapleBappa-App/1.0 (contact@aaplebappa.in; submission geocoding)'
 
+// See src/server/google-maps-link.ts: fetch() has no default timeout, and a
+// submitter's request waits on this one.
+const FETCH_TIMEOUT_MS = 5000
+
 export type GeocodeResult = { lat: number; lng: number }
 
 export async function geocodeAddress(address: string): Promise<GeocodeResult | null> {
@@ -20,9 +24,20 @@ export async function geocodeAddress(address: string): Promise<GeocodeResult | n
     countrycodes: 'in',
   })
 
-  const response = await fetch(`${NOMINATIM_URL}?${params.toString()}`, {
-    headers: { 'User-Agent': USER_AGENT },
-  })
+  let response: Response
+  try {
+    response = await fetch(`${NOMINATIM_URL}?${params.toString()}`, {
+      headers: { 'User-Agent': USER_AGENT },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    })
+  } catch (error) {
+    // Timeout or network failure. Surfaced as "couldn't geocode" rather than
+    // a 500: the caller (submissions.create) turns a null into a
+    // "try dropping a pin instead" message, which is the useful outcome
+    // either way.
+    if (error instanceof Error && error.name === 'TimeoutError') return null
+    throw error
+  }
 
   if (!response.ok) {
     throw new Error(`Nominatim geocoding failed: ${response.status}`)

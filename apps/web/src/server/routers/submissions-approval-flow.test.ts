@@ -42,6 +42,14 @@ class FakeQueryBuilder implements PromiseLike<FakeResult> {
     return this
   }
 
+  // submissions.review looks up only the slugs that could collide with the
+  // one it's about to mint, rather than reading every slug in the table.
+  like(column: string, pattern: string) {
+    const prefix = pattern.endsWith('%') ? pattern.slice(0, -1) : pattern
+    this.filters.push((row) => String(row[column] ?? '').startsWith(prefix))
+    return this
+  }
+
   order(column: string, opts?: { ascending?: boolean }) {
     this.orderCol = column
     this.orderAsc = opts?.ascending !== false
@@ -154,6 +162,25 @@ function createFakeDb() {
         return { data: true, error: null }
       }
 
+      // Stands in for supabase/migrations/0010_duplicate_candidates.sql.
+      // The real function narrows by trigram similarity and a lat/lng box;
+      // this fake returns every mandal, which is a superset — the precise
+      // scoring that decides a duplicate lives in duplicate-check.ts and is
+      // what this flow actually exercises.
+      if (fnName === 'mandal_duplicate_candidates') {
+        return {
+          data: tables.mandals.map((row) => ({
+            id: row.id,
+            name: row.name,
+            slug: row.slug,
+            area: row.area,
+            lat: row.lat,
+            lng: row.lng,
+          })),
+          error: null,
+        }
+      }
+
       if (fnName === 'approve_new_mandal_submission') {
         const mandal = args.p_mandal as Row
         // Mirrors supabase/migrations/0001_core_schema.sql's column defaults
@@ -200,6 +227,16 @@ vi.mock('next/cache', () => ({
   revalidatePath: () => {},
 }))
 
+/**
+ * Imported here rather than inside each test: pulling in the whole router
+ * tree (tRPC, Zod, Supabase, Sentry, Fuse) is the slowest thing this file
+ * does, and inside a test body that cost counts against the per-test
+ * timeout — which, with the whole suite running in parallel, was enough to
+ * blow past it. It still has to be a dynamic import so it resolves after
+ * the vi.mock() calls above are hoisted.
+ */
+const { appRouter } = await import('./_app')
+
 describe('submit → approve → appears in mandals.list', () => {
   beforeEach(() => {
     fakeDb.tables.mandals = []
@@ -209,8 +246,6 @@ describe('submit → approve → appears in mandals.list', () => {
   })
 
   it('carries a new-mandal submission from pending to the public directory', async () => {
-    const { appRouter } = await import('./_app')
-
     const anonCaller = appRouter.createCaller({ supabase: fakeDb.client as never, user: null })
     const moderatorCaller = appRouter.createCaller({
       supabase: fakeDb.client as never,
@@ -258,7 +293,6 @@ describe('submit → approve → appears in mandals.list', () => {
   })
 
   it('rejects a submission from a non-moderator user', async () => {
-    const { appRouter } = await import('./_app')
     const impostorCaller = appRouter.createCaller({
       supabase: fakeDb.client as never,
       user: { id: 'not-a-moderator' } as never,
