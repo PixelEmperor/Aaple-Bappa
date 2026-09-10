@@ -522,4 +522,99 @@ describe('submit → approve → appears in mandals.list', () => {
     )
     expect(updatedMandal?.photo_url).toBe('https://photos.example.com/fake.jpg')
   })
+
+  it('lets a moderator correct an edit report before approving, preserving the reporter’s own message', async () => {
+    fakeDb.tables.mandals.push({
+      id: 'b3a5d9c2-8e4f-4b1a-9c7d-2f6e8a1b4c9d',
+      name: 'Correction Mandal',
+      slug: 'correction-mandal',
+      area: 'Correction Area',
+      zone: null,
+      lat: 19.05,
+      lng: 72.85,
+      established_year: null,
+      description: null,
+      history: null,
+      nearest_station: null,
+      tags: null,
+      timings: null,
+      official_contact: null,
+      photo_url: null,
+      is_public: true,
+      source: 'crowdsourced',
+      verification_status: 'unverified',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+
+    const anonCaller = appRouter.createCaller({ supabase: fakeDb.client as never, user: null })
+    const moderatorCaller = appRouter.createCaller({
+      supabase: fakeDb.client as never,
+      user: { id: 'moderator-1' } as never,
+    })
+
+    const created = await anonCaller.submissions.create({
+      type: 'edit_mandal',
+      payload: {
+        mandal_id: 'b3a5d9c2-8e4f-4b1a-9c7d-2f6e8a1b4c9d',
+        message: 'The name has a typo.',
+        name: 'Correcton Mandall',
+      },
+      session_id: randomUUID(),
+    })
+    if (created.status !== 'created') throw new Error('unreachable')
+
+    // The moderator fixes the reporter's own typo before approving.
+    await moderatorCaller.submissions.updatePayload({
+      type: 'edit_mandal',
+      submissionId: created.submissionId,
+      payload: { name: 'Correction Mandal Fixed' },
+    })
+
+    const stored = fakeDb.tables.submissions.find((row) => row.id === created.submissionId)
+    // The reporter's message survives an edit that never touched it.
+    expect(stored?.payload).toMatchObject({
+      reporter_message: 'The name has a typo.',
+      name: 'Correction Mandal Fixed',
+    })
+
+    await moderatorCaller.submissions.review({
+      submissionId: created.submissionId,
+      decision: 'approve',
+    })
+
+    const updatedMandal = fakeDb.tables.mandals.find(
+      (row) => row.id === 'b3a5d9c2-8e4f-4b1a-9c7d-2f6e8a1b4c9d'
+    )
+    expect(updatedMandal?.name).toBe('Correction Mandal Fixed')
+  })
+
+  it('rejects updatePayload when the input type doesn’t match the submission’s actual type', async () => {
+    const anonCaller = appRouter.createCaller({ supabase: fakeDb.client as never, user: null })
+    const moderatorCaller = appRouter.createCaller({
+      supabase: fakeDb.client as never,
+      user: { id: 'moderator-1' } as never,
+    })
+
+    const created = await anonCaller.submissions.create({
+      type: 'new_mandal',
+      payload: {
+        name: 'Type Mismatch Mandal',
+        area: 'Area',
+        location: { kind: 'pin', lat: 19.1, lng: 72.9 },
+        is_public: true,
+      },
+      confirm_duplicate: false,
+      session_id: randomUUID(),
+    })
+    if (created.status !== 'created') throw new Error('unreachable')
+
+    await expect(
+      moderatorCaller.submissions.updatePayload({
+        type: 'edit_mandal',
+        submissionId: created.submissionId,
+        payload: { name: 'Should not apply' },
+      })
+    ).rejects.toThrow()
+  })
 })

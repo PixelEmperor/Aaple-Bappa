@@ -5,6 +5,7 @@ import { trpc } from '@/lib/trpc/react'
 import {
   TAGS,
   ZONES,
+  type EditReportEditablePayload,
   type Submission,
   type SubmissionEditablePayload,
   type SubmissionsBulkReviewOutput,
@@ -286,7 +287,201 @@ function EditForm({ submission, onDone }: { submission: Submission; onDone: () =
         </button>
         <button
           type="button"
-          onClick={() => update.mutate({ submissionId: submission.id, payload: form })}
+          onClick={() =>
+            update.mutate({ type: 'new_mandal', submissionId: submission.id, payload: form })
+          }
+          disabled={update.isPending}
+          className={`${buttonClass} bg-accent text-white hover:bg-accent-deep`}
+        >
+          {update.isPending ? 'Saving…' : 'Save changes'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/** Same coercion approach as toEditableForm, scoped to an edit report's smaller field set. */
+function toEditReportForm(payload: Record<string, unknown>): EditReportEditablePayload {
+  const zone =
+    typeof payload.zone === 'string' && (ZONES as readonly string[]).includes(payload.zone)
+      ? (payload.zone as EditReportEditablePayload['zone'])
+      : undefined
+
+  return {
+    name: typeof payload.name === 'string' ? payload.name : undefined,
+    area: typeof payload.area === 'string' ? payload.area : undefined,
+    zone,
+    established_year:
+      typeof payload.established_year === 'number' ? payload.established_year : undefined,
+    timings: typeof payload.timings === 'string' ? payload.timings : undefined,
+    nearest_station:
+      typeof payload.nearest_station === 'string' ? payload.nearest_station : undefined,
+    description: typeof payload.description === 'string' ? payload.description : undefined,
+    official_contact:
+      typeof payload.official_contact === 'string' ? payload.official_contact : undefined,
+    is_public: typeof payload.is_public === 'boolean' ? payload.is_public : undefined,
+    photo_url: typeof payload.photo_url === 'string' ? payload.photo_url : undefined,
+  }
+}
+
+/**
+ * Lets a moderator correct an edit report's proposed changes before
+ * approving — e.g. the reporter's suggested name has a typo. Reporter's own
+ * message is shown but not editable here; the server preserves it
+ * regardless (submissions.updatePayload). Every field is optional and blank
+ * means "no proposed change to this field", same convention as the public
+ * report form itself (ReportMandalIssueForm.tsx) — clearing a field here
+ * removes that proposed change rather than proposing an empty value.
+ */
+function EditReportForm({ submission, onDone }: { submission: Submission; onDone: () => void }) {
+  const utils = trpc.useUtils()
+  const [form, setForm] = useState<EditReportEditablePayload>(() =>
+    toEditReportForm(submission.payload)
+  )
+  const update = trpc.submissions.updatePayload.useMutation({
+    onSuccess: async () => {
+      await utils.submissions.list.invalidate()
+      onDone()
+    },
+  })
+
+  function set<K extends keyof EditReportEditablePayload>(
+    key: K,
+    value: EditReportEditablePayload[K]
+  ) {
+    setForm((prev) => ({ ...prev, [key]: value }))
+  }
+
+  const reporterMessage =
+    typeof submission.payload.reporter_message === 'string'
+      ? submission.payload.reporter_message
+      : null
+
+  return (
+    <div className="flex flex-col gap-3 rounded-md border border-line bg-surface-2 p-3">
+      {reporterMessage && (
+        <p className="rounded-md border border-accent/30 bg-accent-tint p-2 text-sm whitespace-pre-wrap">
+          <span className="font-bold">Reporter says: </span>
+          {reporterMessage}
+        </p>
+      )}
+      <p className="text-xs text-ink-soft">
+        Leave a field blank to drop it from the proposed changes — this doesn&apos;t clear the value
+        on the live mandal, it just means this report won&apos;t touch it.
+      </p>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-semibold text-ink-faint">Name</span>
+          <input
+            value={form.name ?? ''}
+            onChange={(e) => set('name', e.target.value || undefined)}
+            className={inputClass}
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-semibold text-ink-faint">Area</span>
+          <input
+            value={form.area ?? ''}
+            onChange={(e) => set('area', e.target.value || undefined)}
+            className={inputClass}
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-semibold text-ink-faint">Zone</span>
+          <select
+            value={form.zone ?? ''}
+            onChange={(e) =>
+              set(
+                'zone',
+                e.target.value ? (e.target.value as EditReportEditablePayload['zone']) : undefined
+              )
+            }
+            className={inputClass}
+          >
+            <option value="">No change</option>
+            {ZONES.map((zone) => (
+              <option key={zone} value={zone}>
+                {zone}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-semibold text-ink-faint">Established year</span>
+          <input
+            type="number"
+            value={form.established_year ?? ''}
+            onChange={(e) =>
+              set('established_year', e.target.value ? Number(e.target.value) : undefined)
+            }
+            className={inputClass}
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-semibold text-ink-faint">Timings</span>
+          <input
+            value={form.timings ?? ''}
+            onChange={(e) => set('timings', e.target.value || undefined)}
+            className={inputClass}
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-semibold text-ink-faint">Nearest station</span>
+          <input
+            value={form.nearest_station ?? ''}
+            onChange={(e) => set('nearest_station', e.target.value || undefined)}
+            className={inputClass}
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-semibold text-ink-faint">Official contact</span>
+          <input
+            value={form.official_contact ?? ''}
+            onChange={(e) => set('official_contact', e.target.value || undefined)}
+            className={inputClass}
+          />
+        </label>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={form.is_public ?? true}
+            onChange={(e) => set('is_public', e.target.checked)}
+          />
+          Public
+        </label>
+      </div>
+
+      <label className="flex flex-col gap-1">
+        <span className="text-xs font-semibold text-ink-faint">Description</span>
+        <textarea
+          value={form.description ?? ''}
+          onChange={(e) => set('description', e.target.value || undefined)}
+          rows={3}
+          className={inputClass}
+        />
+      </label>
+
+      {update.error && (
+        <p role="alert" className="text-sm text-crit">
+          {update.error.message}
+        </p>
+      )}
+
+      <div className="flex gap-3">
+        <button
+          type="button"
+          onClick={onDone}
+          disabled={update.isPending}
+          className={`${buttonClass} border border-line text-ink-soft hover:border-ink-faint hover:text-ink`}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            update.mutate({ type: 'edit_mandal', submissionId: submission.id, payload: form })
+          }
           disabled={update.isPending}
           className={`${buttonClass} bg-accent text-white hover:bg-accent-deep`}
         >
@@ -323,7 +518,7 @@ function QueueCard({
   })
 
   const isPending = submission.status === 'pending'
-  const canEdit = isPending && submission.type === 'new_mandal'
+  const canEdit = isPending
   const busyDecision = review.isPending ? review.variables?.decision : undefined
   const editReport = submission.type === 'edit_mandal' ? splitEditReport(submission.payload) : null
 
@@ -379,7 +574,11 @@ function QueueCard({
       </div>
 
       {isEditing ? (
-        <EditForm submission={submission} onDone={() => setIsEditing(false)} />
+        submission.type === 'new_mandal' ? (
+          <EditForm submission={submission} onDone={() => setIsEditing(false)} />
+        ) : (
+          <EditReportForm submission={submission} onDone={() => setIsEditing(false)} />
+        )
       ) : (
         <>
           {editReport?.message && (

@@ -305,7 +305,7 @@ export const submissionsRouter = router({
 
       const { data: submission, error: fetchError } = await supabase
         .from('submissions')
-        .select('status')
+        .select('status, type, payload')
         .eq('id', input.submissionId)
         .maybeSingle()
 
@@ -321,10 +321,28 @@ export const submissionsRouter = router({
           message: 'Only pending submissions can be edited.',
         })
       }
+      if (submission.type !== input.type) {
+        // Only reachable if the queue's cached list is stale (e.g. a second
+        // moderator changed the submission's type — impossible today, but
+        // the input schema is a discriminated union keyed on this, so a
+        // mismatch would otherwise silently validate the wrong shape.
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'This submission changed since it was loaded — refresh and try again.',
+        })
+      }
+
+      // edit_mandal's payload also carries reporter_message, which isn't a
+      // mandal column and isn't part of what this form edits — preserved
+      // as-is rather than letting an edit silently drop the original report.
+      const nextPayload =
+        input.type === 'edit_mandal'
+          ? { reporter_message: submission.payload?.reporter_message ?? null, ...input.payload }
+          : input.payload
 
       const { error: updateError } = await supabase
         .from('submissions')
-        .update({ payload: input.payload })
+        .update({ payload: nextPayload })
         .eq('id', input.submissionId)
 
       if (updateError) {

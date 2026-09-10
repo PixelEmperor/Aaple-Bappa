@@ -376,10 +376,42 @@ export const submissionEditablePayloadSchema = z.object({
 
 export type SubmissionEditablePayload = z.infer<typeof submissionEditablePayloadSchema>
 
-export const submissionsUpdatePayloadInputSchema = z.object({
-  submissionId: z.uuid(),
-  payload: submissionEditablePayloadSchema,
+/**
+ * A moderator's editable view of a pending edit_mandal submission's proposed
+ * changes — every field optional, since an edit report is a bag of
+ * independent field suggestions (buildMandalEditPatch, server/mandal-approval.ts),
+ * not a full mandal record. Scoped to the same fields the public report form
+ * (ReportMandalIssueForm.tsx / editMandalPayloadSchema above) actually
+ * collects — lat/lng needs a map pin, not a text field, and neither the
+ * public form nor this one attempts it.
+ */
+export const editReportEditablePayloadSchema = z.object({
+  name: z.string().trim().min(2).max(200).optional(),
+  area: z.string().trim().min(2).max(200).optional(),
+  zone: z.enum(ZONES).optional(),
+  established_year: z.number().int().min(1800).max(new Date().getFullYear()).optional(),
+  timings: z.string().trim().max(200).optional(),
+  nearest_station: z.string().trim().max(200).optional(),
+  description: z.string().trim().max(2000).optional(),
+  official_contact: z.string().trim().max(200).optional(),
+  is_public: z.boolean().optional(),
+  photo_url: photoUrlSchema.optional(),
 })
+
+export type EditReportEditablePayload = z.infer<typeof editReportEditablePayloadSchema>
+
+export const submissionsUpdatePayloadInputSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('new_mandal'),
+    submissionId: z.uuid(),
+    payload: submissionEditablePayloadSchema,
+  }),
+  z.object({
+    type: z.literal('edit_mandal'),
+    submissionId: z.uuid(),
+    payload: editReportEditablePayloadSchema,
+  }),
+])
 
 export type SubmissionsUpdatePayloadInput = z.infer<typeof submissionsUpdatePayloadInputSchema>
 
