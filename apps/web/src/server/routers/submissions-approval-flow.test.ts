@@ -21,6 +21,7 @@ class FakeQueryBuilder implements PromiseLike<FakeResult> {
   private wantCount = false
   private rangeFrom: number | null = null
   private rangeTo: number | null = null
+  private limitCount: number | null = null
   private orderCol: string | null = null
   private orderAsc = true
   private singleMode: 'single' | 'maybeSingle' | null = null
@@ -42,6 +43,13 @@ class FakeQueryBuilder implements PromiseLike<FakeResult> {
     return this
   }
 
+  // submissions.list's mandal join (edit_mandal rows) looks up several
+  // mandal ids in one query rather than one round trip per row.
+  in(column: string, values: unknown[]) {
+    this.filters.push((row) => values.includes(row[column]))
+    return this
+  }
+
   // submissions.review looks up only the slugs that could collide with the
   // one it's about to mint, rather than reading every slug in the table.
   like(column: string, pattern: string) {
@@ -59,6 +67,11 @@ class FakeQueryBuilder implements PromiseLike<FakeResult> {
   range(from: number, to: number) {
     this.rangeFrom = from
     this.rangeTo = to
+    return this
+  }
+
+  limit(count: number) {
+    this.limitCount = count
     return this
   }
 
@@ -132,6 +145,9 @@ class FakeQueryBuilder implements PromiseLike<FakeResult> {
     if (this.rangeFrom !== null && this.rangeTo !== null) {
       rows = rows.slice(this.rangeFrom, this.rangeTo + 1)
     }
+    if (this.limitCount !== null) {
+      rows = rows.slice(0, this.limitCount)
+    }
 
     if (this.singleMode) {
       return { data: rows[0] ? { ...rows[0] } : null, error: null }
@@ -179,6 +195,20 @@ function createFakeDb() {
           })),
           error: null,
         }
+      }
+
+      if (fnName === 'approve_edit_mandal_submission') {
+        const mandal = tables.mandals.find((row) => row.id === args.p_mandal_id)
+        if (mandal) {
+          Object.assign(mandal, args.p_patch as Row)
+        }
+        const submission = tables.submissions.find((row) => row.id === args.p_submission_id)
+        if (submission) {
+          submission.status = 'approved'
+          submission.moderator_notes = args.p_moderator_notes
+          submission.reviewed_at = new Date().toISOString()
+        }
+        return { data: mandal?.slug ?? null, error: null }
       }
 
       if (fnName === 'approve_new_mandal_submission') {
@@ -301,5 +331,130 @@ describe('submit → approve → appears in mandals.list', () => {
     await expect(
       impostorCaller.submissions.list({ status: 'pending', page: 1, pageSize: 20 })
     ).rejects.toThrow()
+  })
+
+  it('lets a public reporter flag an issue on an existing mandal, and a moderator approve the fix', async () => {
+    fakeDb.tables.mandals.push({
+      id: '488769af-20e9-4c7e-8ded-934f4991513c',
+      name: 'Existing Mandal',
+      slug: 'existing-mandal',
+      area: 'Existing Area',
+      zone: null,
+      lat: 19.05,
+      lng: 72.85,
+      established_year: null,
+      description: null,
+      history: null,
+      nearest_station: null,
+      tags: null,
+      timings: null,
+      official_contact: null,
+      photo_url: null,
+      is_public: true,
+      source: 'crowdsourced',
+      verification_status: 'unverified',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+
+    const anonCaller = appRouter.createCaller({ supabase: fakeDb.client as never, user: null })
+    const moderatorCaller = appRouter.createCaller({
+      supabase: fakeDb.client as never,
+      user: { id: 'moderator-1' } as never,
+    })
+
+    const created = await anonCaller.submissions.create({
+      type: 'edit_mandal',
+      payload: {
+        mandal_id: '488769af-20e9-4c7e-8ded-934f4991513c',
+        message: 'The timings listed are wrong, it closes earlier now.',
+        timings: '6 AM – 9 PM',
+      },
+      session_id: randomUUID(),
+    })
+    expect(created.status).toBe('created')
+    if (created.status !== 'created') throw new Error('unreachable')
+
+    // The queue join (submissions.list) should surface which live mandal
+    // this report targets, without the client fetching it separately.
+    const pendingQueue = await moderatorCaller.submissions.list({
+      status: 'pending',
+      page: 1,
+      pageSize: 20,
+    })
+    const queued = pendingQueue.items.find((item) => item.id === created.submissionId)
+    expect(queued?.mandal).toEqual({ name: 'Existing Mandal', slug: 'existing-mandal' })
+    expect(queued?.payload.reporter_message).toBe(
+      'The timings listed are wrong, it closes earlier now.'
+    )
+
+    const review = await moderatorCaller.submissions.review({
+      submissionId: created.submissionId,
+      decision: 'approve',
+    })
+    expect(review.status).toBe('approved')
+    expect(review.mandalSlug).toBe('existing-mandal')
+
+    const updatedMandal = fakeDb.tables.mandals.find(
+      (row) => row.id === '488769af-20e9-4c7e-8ded-934f4991513c'
+    )
+    expect(updatedMandal?.timings).toBe('6 AM – 9 PM')
+  })
+
+  it('bulk-reviews a mixed batch, recording each outcome without the batch aborting on one failure', async () => {
+    const anonCaller = appRouter.createCaller({ supabase: fakeDb.client as never, user: null })
+    const moderatorCaller = appRouter.createCaller({
+      supabase: fakeDb.client as never,
+      user: { id: 'moderator-1' } as never,
+    })
+
+    const first = await anonCaller.submissions.create({
+      type: 'new_mandal',
+      payload: {
+        name: 'Bulk Mandal One',
+        area: 'Area One',
+        location: { kind: 'pin', lat: 18.9, lng: 72.8 },
+        is_public: true,
+      },
+      confirm_duplicate: false,
+      session_id: randomUUID(),
+    })
+    const second = await anonCaller.submissions.create({
+      type: 'new_mandal',
+      payload: {
+        name: 'Bulk Mandal Two',
+        area: 'Area Two',
+        location: { kind: 'pin', lat: 19.3, lng: 73.1 },
+        is_public: true,
+      },
+      confirm_duplicate: false,
+      session_id: randomUUID(),
+    })
+    if (first.status !== 'created' || second.status !== 'created') {
+      throw new Error('unreachable')
+    }
+
+    // Reviewed ahead of time so the batch below hits it as an
+    // already-reviewed conflict — the case a moderator can't predict when
+    // selecting a page's worth of rows to bulk-approve.
+    await moderatorCaller.submissions.review({
+      submissionId: first.submissionId,
+      decision: 'reject',
+    })
+
+    const result = await moderatorCaller.submissions.bulkReview({
+      submissionIds: [first.submissionId, second.submissionId],
+      decision: 'approve',
+    })
+
+    const firstResult = result.results.find((r) => r.submissionId === first.submissionId)
+    const secondResult = result.results.find((r) => r.submissionId === second.submissionId)
+    expect(firstResult?.status).toBe('error')
+    expect(firstResult?.error).toBeTruthy()
+    expect(secondResult?.status).toBe('approved')
+    expect(secondResult?.mandalSlug).toBe('bulk-mandal-two')
+
+    const directory = await anonCaller.mandals.list({ page: 1, pageSize: 24 })
+    expect(directory.items.map((mandal) => mandal.slug)).toContain('bulk-mandal-two')
   })
 })

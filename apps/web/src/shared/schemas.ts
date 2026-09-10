@@ -170,18 +170,56 @@ export const newMandalPayloadSchema = z.object({
 
 export type NewMandalPayload = z.infer<typeof newMandalPayloadSchema>
 
-export const submissionsCreateInputSchema = z.object({
-  type: z.literal('new_mandal'),
-  payload: newMandalPayloadSchema,
-  submitter_contact: z.string().trim().max(200).optional(),
-  // Set after a possible_duplicate response, once the submitter confirms
-  // "this isn't a duplicate" — re-running the same call with this true
-  // skips the duplicate check and writes straight through.
-  confirm_duplicate: z.boolean().default(false),
-  // Anonymous, client-generated (src/lib/session-id.ts), for rate-limiting
-  // only — same pattern as crowd_reports.reporter_session_id (scope.md §4).
-  session_id: z.uuid(),
+/**
+ * Public "report an issue / suggest an edit" payload — one free-text
+ * `message` (always shown to the moderator, whatever else is filled in)
+ * plus an optional proposed correction per field. Only fields the reporter
+ * actually typed something into are sent (see EditMandalForm), so this
+ * schema doesn't distinguish "no opinion" from "leave unchanged" — that's
+ * handled client-side by omitting the key entirely.
+ *
+ * Deliberately narrower than a moderator's edit surface: no lat/lng or
+ * photo_url here (those need a map pin / upload, not a text field) and no
+ * `history` (a longer rewrite belongs with a moderator, not a drive-by
+ * report). Whatever is proposed still only ever lands on the mandal via
+ * buildMandalEditPatch's own whitelist + validation at approval time.
+ */
+export const editMandalPayloadSchema = z.object({
+  mandal_id: z.uuid(),
+  message: z.string().trim().min(3).max(1000),
+  name: z.string().trim().min(2).max(200).optional(),
+  area: z.string().trim().min(2).max(200).optional(),
+  zone: z.enum(ZONES).optional(),
+  established_year: z.number().int().min(1800).max(new Date().getFullYear()).optional(),
+  timings: z.string().trim().max(200).optional(),
+  nearest_station: z.string().trim().max(200).optional(),
+  description: z.string().trim().max(2000).optional(),
+  official_contact: z.string().trim().max(200).optional(),
+  is_public: z.boolean().optional(),
 })
+
+export type EditMandalPayload = z.infer<typeof editMandalPayloadSchema>
+
+export const submissionsCreateInputSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('new_mandal'),
+    payload: newMandalPayloadSchema,
+    submitter_contact: z.string().trim().max(200).optional(),
+    // Set after a possible_duplicate response, once the submitter confirms
+    // "this isn't a duplicate" — re-running the same call with this true
+    // skips the duplicate check and writes straight through.
+    confirm_duplicate: z.boolean().default(false),
+    // Anonymous, client-generated (src/lib/session-id.ts), for rate-limiting
+    // only — same pattern as crowd_reports.reporter_session_id (scope.md §4).
+    session_id: z.uuid(),
+  }),
+  z.object({
+    type: z.literal('edit_mandal'),
+    payload: editMandalPayloadSchema,
+    submitter_contact: z.string().trim().max(200).optional(),
+    session_id: z.uuid(),
+  }),
+])
 
 export type SubmissionsCreateInput = z.infer<typeof submissionsCreateInputSchema>
 
@@ -224,6 +262,10 @@ export const submissionSchema = z.object({
   moderator_notes: z.string().nullable(),
   submitted_at: z.string(),
   reviewed_at: z.string().nullable(),
+  // Populated by submissions.list for edit_mandal rows only (a join the DB
+  // row itself doesn't carry) so the queue can show which live mandal a
+  // report targets, and link to it, without a second round trip per card.
+  mandal: z.object({ name: z.string(), slug: z.string() }).nullable(),
 })
 
 export type Submission = z.infer<typeof submissionSchema>
@@ -258,6 +300,46 @@ export const submissionsReviewOutputSchema = z.object({
 })
 
 export type SubmissionsReviewOutput = z.infer<typeof submissionsReviewOutputSchema>
+
+/**
+ * Bulk approve/reject (design-plan.md Milestone 8 follow-up: the 190-row
+ * mandal-dataset import made one-at-a-time review impractical). Capped at
+ * 50 per call — each item is its own sequential RPC round trip
+ * server-side, and a much larger batch risks the request outrunning a
+ * serverless function's execution time limit. The client chunks a larger
+ * selection into calls of this size (ModerationQueue.tsx).
+ */
+export const submissionsBulkReviewInputSchema = z.object({
+  submissionIds: z.array(z.uuid()).min(1).max(50),
+  decision: z.enum(['approve', 'reject']),
+  moderatorNotes: z.string().trim().max(1000).optional(),
+})
+
+export type SubmissionsBulkReviewInput = z.infer<typeof submissionsBulkReviewInputSchema>
+
+export const submissionsBulkReviewOutputSchema = z.object({
+  results: z.array(
+    z.object({
+      submissionId: z.uuid(),
+      status: z.enum(['approved', 'rejected', 'error']),
+      mandalSlug: z.string().nullable(),
+      error: z.string().nullable(),
+    })
+  ),
+})
+
+export type SubmissionsBulkReviewOutput = z.infer<typeof submissionsBulkReviewOutputSchema>
+
+/** All ids for a status, for "select all" — capped well above any status's current row count. */
+export const submissionsListIdsInputSchema = z.object({
+  status: submissionStatusSchema.default('pending'),
+})
+
+export type SubmissionsListIdsInput = z.infer<typeof submissionsListIdsInputSchema>
+
+export const submissionsListIdsOutputSchema = z.object({ ids: z.array(z.uuid()) })
+
+export type SubmissionsListIdsOutput = z.infer<typeof submissionsListIdsOutputSchema>
 
 /**
  * A moderator's editable view of a pending new_mandal submission's payload

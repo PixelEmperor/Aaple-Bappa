@@ -2,9 +2,14 @@ import { TRPCError } from '@trpc/server'
 import { randomUUID } from 'node:crypto'
 import { revalidatePath } from 'next/cache'
 import { createSupabaseServiceRoleClient } from '@/lib/supabase/service-role'
+import type { SubmissionsBulkReviewOutput } from '@/shared/schemas'
 import {
+  submissionsBulkReviewInputSchema,
+  submissionsBulkReviewOutputSchema,
   submissionsCreateInputSchema,
   submissionsCreateOutputSchema,
+  submissionsListIdsInputSchema,
+  submissionsListIdsOutputSchema,
   submissionsListInputSchema,
   submissionsListOutputSchema,
   submissionsReviewInputSchema,
@@ -60,6 +65,53 @@ export const submissionsRouter = router({
       // schema, the image validation, and the duplicate check. This procedure
       // is now the only way in.
       const supabase = createSupabaseServiceRoleClient()
+
+      if (input.type === 'edit_mandal') {
+        // Existence check rather than trusting the FK constraint to reject a
+        // bad id: a friendly BAD_REQUEST beats a raw Postgres FK-violation
+        // message reaching the submitter.
+        const { data: mandal, error: mandalError } = await supabase
+          .from('mandals')
+          .select('id')
+          .eq('id', input.payload.mandal_id)
+          .maybeSingle()
+
+        if (mandalError) {
+          throw internalError('submissions.create edit_mandal mandal lookup', mandalError)
+        }
+        if (!mandal) {
+          throw new TRPCError({
+            code: 'NOT_FOUND',
+            message: 'That mandal no longer exists.',
+          })
+        }
+
+        const { mandal_id, message, ...changes } = input.payload
+        // reporter_message isn't a mandal column — buildMandalEditPatch's
+        // whitelist (server/mandal-approval.ts) ignores unknown keys, so it
+        // rides along in payload purely for the moderator to read, same as
+        // every proposed field change below.
+        const payload: Record<string, unknown> = { reporter_message: message }
+        for (const [key, value] of Object.entries(changes)) {
+          if (value !== undefined) payload[key] = value
+        }
+
+        const submissionId = randomUUID()
+        const { error: insertError } = await supabase.from('submissions').insert({
+          id: submissionId,
+          type: 'edit_mandal',
+          mandal_id,
+          payload,
+          submitter_contact: input.submitter_contact ?? null,
+          status: 'pending',
+        })
+
+        if (insertError) {
+          throw internalError('submissions.create edit_mandal insert', insertError)
+        }
+
+        return { status: 'created' as const, submissionId }
+      }
 
       let location: { lat: number; lng: number }
       if (input.payload.location.kind === 'pin') {
@@ -168,7 +220,54 @@ export const submissionsRouter = router({
         throw internalError('submissions.list', error)
       }
 
-      return { items: data ?? [], total: count ?? 0, page: input.page }
+      const rows = data ?? []
+
+      // One extra query for the whole page rather than one per row: fetch
+      // name/slug for every distinct mandal_id an edit_mandal row on this
+      // page targets, then attach it client-side. new_mandal rows (and any
+      // edit_mandal row whose target mandal was since deleted) just get null.
+      const mandalIds = [...new Set(rows.map((row) => row.mandal_id).filter((id) => id !== null))]
+      const mandalById = new Map<string, { name: string; slug: string }>()
+      if (mandalIds.length > 0) {
+        const { data: mandals, error: mandalsError } = await supabase
+          .from('mandals')
+          .select('id, name, slug')
+          .in('id', mandalIds)
+
+        if (mandalsError) {
+          throw internalError('submissions.list mandal join', mandalsError)
+        }
+        for (const mandal of mandals ?? []) {
+          mandalById.set(mandal.id as string, { name: mandal.name, slug: mandal.slug })
+        }
+      }
+
+      const items = rows.map((row) => ({
+        ...row,
+        mandal: row.mandal_id ? (mandalById.get(row.mandal_id) ?? null) : null,
+      }))
+
+      return { items, total: count ?? 0, page: input.page }
+    }),
+
+  /** All ids for a status (design-plan.md Milestone 8 follow-up: bulk review) — powers "select all". */
+  listIds: moderatorProcedure
+    .input(submissionsListIdsInputSchema)
+    .output(submissionsListIdsOutputSchema)
+    .query(async ({ input }) => {
+      const supabase = createSupabaseServiceRoleClient()
+      const { data, error } = await supabase
+        .from('submissions')
+        .select('id')
+        .eq('status', input.status)
+        .order('submitted_at', { ascending: true })
+        .limit(1000)
+
+      if (error) {
+        throw internalError('submissions.listIds', error)
+      }
+
+      return { ids: (data ?? []).map((row) => row.id as string) }
     }),
 
   /**
@@ -227,135 +326,201 @@ export const submissionsRouter = router({
     .output(submissionsReviewOutputSchema)
     .mutation(async ({ input }) => {
       const supabase = createSupabaseServiceRoleClient()
-
-      const { data: submission, error: fetchError } = await supabase
-        .from('submissions')
-        .select('*')
-        .eq('id', input.submissionId)
-        .maybeSingle()
-
-      if (fetchError) {
-        throw internalError('submissions.review fetch', fetchError)
-      }
-      if (!submission) {
-        throw new TRPCError({ code: 'NOT_FOUND' })
-      }
-      if (submission.status !== 'pending') {
-        throw new TRPCError({
-          code: 'CONFLICT',
-          message: 'This submission was already reviewed.',
-        })
-      }
-
-      if (input.decision === 'reject') {
-        const { error: rejectError } = await supabase
-          .from('submissions')
-          .update({
-            status: 'rejected',
-            moderator_notes: input.moderatorNotes ?? null,
-            reviewed_at: new Date().toISOString(),
-          })
-          .eq('id', input.submissionId)
-
-        if (rejectError) {
-          throw internalError('submissions.review reject', rejectError)
-        }
-
-        return { status: 'rejected' as const, mandalSlug: null }
-      }
-
-      let mandalSlug: string | null
-
-      if (submission.type === 'new_mandal') {
-        // Only slugs that could actually collide, rather than every slug in
-        // the table: generateSlug only ever compares against `slugify(name)`
-        // and suffixed forms of it. The unfiltered read this replaces was
-        // capped by config.toml's max_rows = 1000, so past that it could
-        // hand generateSlug an incomplete set and mint a slug that then
-        // failed the mandals_slug_key unique index.
-        const slugPrefix = slugify(submission.payload?.name ?? '')
-        const { data: existingRows, error: slugFetchError } = await supabase
-          .from('mandals')
-          .select('slug')
-          .like('slug', `${slugPrefix}%`)
-
-        if (slugFetchError) {
-          throw internalError('submissions.review slug lookup', slugFetchError)
-        }
-
-        const existingSlugs = new Set((existingRows ?? []).map((row) => row.slug as string))
-        const insertRow = buildNewMandalInsert(submission.payload, existingSlugs)
-
-        const { data: slug, error: rpcError } = await supabase.rpc(
-          'approve_new_mandal_submission',
-          {
-            p_submission_id: input.submissionId,
-            p_mandal: insertRow,
-            p_moderator_notes: input.moderatorNotes ?? null,
-          }
-        )
-
-        if (rpcError) {
-          throw internalError('submissions.review approve new_mandal', rpcError)
-        }
-        mandalSlug = slug
-      } else {
-        if (!submission.mandal_id) {
-          throw new TRPCError({
-            code: 'BAD_REQUEST',
-            message: 'Edit submission is missing its target mandal.',
-          })
-        }
-
-        const { data: existingMandal, error: mandalFetchError } = await supabase
-          .from('mandals')
-          .select('*')
-          .eq('id', submission.mandal_id)
-          .maybeSingle()
-
-        if (mandalFetchError) {
-          throw internalError('submissions.review mandal fetch', mandalFetchError)
-        }
-        if (!existingMandal) {
-          throw new TRPCError({ code: 'NOT_FOUND', message: 'Target mandal no longer exists.' })
-        }
-
-        const { patch, dropped } = buildMandalEditPatch(submission.payload)
-        if (Object.keys(patch).length === 0) {
-          throw new TRPCError({
-            code: 'BAD_REQUEST',
-            message:
-              dropped.length > 0
-                ? `This submission proposes no valid changes (rejected: ${dropped.join(', ')}).`
-                : 'This submission proposes no changes.',
-          })
-        }
-
-        const notes = formatAuditTrail(existingMandal, patch, input.moderatorNotes, dropped)
-
-        const { data: slug, error: rpcError } = await supabase.rpc(
-          'approve_edit_mandal_submission',
-          {
-            p_submission_id: input.submissionId,
-            p_mandal_id: submission.mandal_id,
-            p_patch: patch,
-            p_moderator_notes: notes,
-          }
-        )
-
-        if (rpcError) {
-          throw internalError('submissions.review approve edit_mandal', rpcError)
-        }
-        mandalSlug = slug
-      }
+      const result = await reviewSubmission(supabase, input)
 
       // Approved content is now live — refresh the ISR pages that cached its
       // absence (design-plan.md Milestone 8).
       revalidatePath('/')
-      if (mandalSlug) {
-        revalidatePath(`/mandal/${mandalSlug}`)
+      if (result.mandalSlug) {
+        revalidatePath(`/mandal/${result.mandalSlug}`)
       }
 
-      return { status: 'approved' as const, mandalSlug }
+      return result
+    }),
+
+  /**
+   * Same decision logic as `review`, applied to up to 50 submissions in one
+   * call (design-plan.md Milestone 8 follow-up: reviewing a 190-row bulk
+   * import one card at a time isn't practical). Each id is independent —
+   * one bad row (already reviewed, target mandal deleted, no valid patch
+   * fields) is recorded as an error alongside the rest rather than aborting
+   * the whole batch, since a moderator selecting 50 rows has no way to know
+   * in advance which ones are still clean.
+   */
+  bulkReview: moderatorProcedure
+    .input(submissionsBulkReviewInputSchema)
+    .output(submissionsBulkReviewOutputSchema)
+    .mutation(async ({ input }) => {
+      const supabase = createSupabaseServiceRoleClient()
+      const results: SubmissionsBulkReviewOutput['results'] = []
+      const approvedSlugs = new Set<string>()
+
+      // Sequential, not Promise.all: these are writes against a shared
+      // connection pool (slug-collision reads plus an RPC per row), and
+      // running 50 of them concurrently risks exhausting it for every other
+      // request in flight. A few extra seconds here is cheaper than that.
+      for (const submissionId of input.submissionIds) {
+        try {
+          const outcome = await reviewSubmission(supabase, {
+            submissionId,
+            decision: input.decision,
+            moderatorNotes: input.moderatorNotes,
+          })
+          results.push({
+            submissionId,
+            status: outcome.status,
+            mandalSlug: outcome.mandalSlug,
+            error: null,
+          })
+          if (outcome.mandalSlug) {
+            approvedSlugs.add(outcome.mandalSlug)
+          }
+        } catch (err) {
+          results.push({
+            submissionId,
+            status: 'error',
+            mandalSlug: null,
+            error: err instanceof TRPCError ? err.message : 'Unexpected error',
+          })
+        }
+      }
+
+      if (approvedSlugs.size > 0) {
+        revalidatePath('/')
+        for (const slug of approvedSlugs) {
+          revalidatePath(`/mandal/${slug}`)
+        }
+      }
+
+      return { results }
     }),
 })
+
+/**
+ * Shared by `review` and `bulkReview` — fetches the submission, applies the
+ * approve/reject decision, and returns the outcome. Throws TRPCError for
+ * anything that stops a single submission from being reviewable; callers
+ * decide whether that aborts the whole request (review) or is recorded
+ * per-item and the batch continues (bulkReview).
+ */
+async function reviewSubmission(
+  supabase: ReturnType<typeof createSupabaseServiceRoleClient>,
+  input: { submissionId: string; decision: 'approve' | 'reject'; moderatorNotes?: string }
+): Promise<{ status: 'approved' | 'rejected'; mandalSlug: string | null }> {
+  const { data: submission, error: fetchError } = await supabase
+    .from('submissions')
+    .select('*')
+    .eq('id', input.submissionId)
+    .maybeSingle()
+
+  if (fetchError) {
+    throw internalError('submissions.review fetch', fetchError)
+  }
+  if (!submission) {
+    throw new TRPCError({ code: 'NOT_FOUND' })
+  }
+  if (submission.status !== 'pending') {
+    throw new TRPCError({
+      code: 'CONFLICT',
+      message: 'This submission was already reviewed.',
+    })
+  }
+
+  if (input.decision === 'reject') {
+    const { error: rejectError } = await supabase
+      .from('submissions')
+      .update({
+        status: 'rejected',
+        moderator_notes: input.moderatorNotes ?? null,
+        reviewed_at: new Date().toISOString(),
+      })
+      .eq('id', input.submissionId)
+
+    if (rejectError) {
+      throw internalError('submissions.review reject', rejectError)
+    }
+
+    return { status: 'rejected' as const, mandalSlug: null }
+  }
+
+  let mandalSlug: string | null
+
+  if (submission.type === 'new_mandal') {
+    // Only slugs that could actually collide, rather than every slug in
+    // the table: generateSlug only ever compares against `slugify(name)`
+    // and suffixed forms of it. The unfiltered read this replaces was
+    // capped by config.toml's max_rows = 1000, so past that it could
+    // hand generateSlug an incomplete set and mint a slug that then
+    // failed the mandals_slug_key unique index.
+    const slugPrefix = slugify(submission.payload?.name ?? '')
+    const { data: existingRows, error: slugFetchError } = await supabase
+      .from('mandals')
+      .select('slug')
+      .like('slug', `${slugPrefix}%`)
+
+    if (slugFetchError) {
+      throw internalError('submissions.review slug lookup', slugFetchError)
+    }
+
+    const existingSlugs = new Set((existingRows ?? []).map((row) => row.slug as string))
+    const insertRow = buildNewMandalInsert(submission.payload, existingSlugs)
+
+    const { data: slug, error: rpcError } = await supabase.rpc('approve_new_mandal_submission', {
+      p_submission_id: input.submissionId,
+      p_mandal: insertRow,
+      p_moderator_notes: input.moderatorNotes ?? null,
+    })
+
+    if (rpcError) {
+      throw internalError('submissions.review approve new_mandal', rpcError)
+    }
+    mandalSlug = slug
+  } else {
+    if (!submission.mandal_id) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: 'Edit submission is missing its target mandal.',
+      })
+    }
+
+    const { data: existingMandal, error: mandalFetchError } = await supabase
+      .from('mandals')
+      .select('*')
+      .eq('id', submission.mandal_id)
+      .maybeSingle()
+
+    if (mandalFetchError) {
+      throw internalError('submissions.review mandal fetch', mandalFetchError)
+    }
+    if (!existingMandal) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: 'Target mandal no longer exists.' })
+    }
+
+    const { patch, dropped } = buildMandalEditPatch(submission.payload)
+    if (Object.keys(patch).length === 0) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message:
+          dropped.length > 0
+            ? `This submission proposes no valid changes (rejected: ${dropped.join(', ')}).`
+            : 'This submission proposes no changes.',
+      })
+    }
+
+    const notes = formatAuditTrail(existingMandal, patch, input.moderatorNotes, dropped)
+
+    const { data: slug, error: rpcError } = await supabase.rpc('approve_edit_mandal_submission', {
+      p_submission_id: input.submissionId,
+      p_mandal_id: submission.mandal_id,
+      p_patch: patch,
+      p_moderator_notes: notes,
+    })
+
+    if (rpcError) {
+      throw internalError('submissions.review approve edit_mandal', rpcError)
+    }
+    mandalSlug = slug
+  }
+
+  return { status: 'approved' as const, mandalSlug }
+}

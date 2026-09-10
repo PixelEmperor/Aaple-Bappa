@@ -4,6 +4,7 @@ import Image from 'next/image'
 import { notFound } from 'next/navigation'
 import MandalMiniMap from '@/components/MandalMiniMapIsland'
 import { ModakIcon } from '@/components/ModakIcon'
+import { ReportMandalIssueForm } from '@/components/ReportMandalIssueForm'
 import { getAllMandalSlugs, getMandalBySlug } from '@/lib/mandals-data'
 import { mandalGradient } from '@/lib/mandal-gradient'
 
@@ -126,6 +127,20 @@ export default async function MandalDetailPage({ params }: PageProps<'/mandal/[s
               <p className="max-w-prose text-ink-soft">{mandal.history}</p>
             </div>
           )}
+
+          <ReportMandalIssueForm
+            mandal={{
+              id: mandal.id,
+              name: mandal.name,
+              area: mandal.area,
+              zone: mandal.zone,
+              established_year: mandal.established_year,
+              timings: mandal.timings,
+              nearest_station: mandal.nearest_station,
+              description: mandal.description,
+              official_contact: mandal.official_contact,
+            }}
+          />
         </div>
 
         <aside className="flex flex-col gap-4">

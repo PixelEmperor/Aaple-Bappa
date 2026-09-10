@@ -7,10 +7,15 @@ import {
   ZONES,
   type Submission,
   type SubmissionEditablePayload,
+  type SubmissionsBulkReviewOutput,
   type SubmissionStatus,
 } from '@/shared/schemas'
 
-const PAGE_SIZE = 20
+const PAGE_SIZE = 50
+// submissions.bulkReview caps a single call at 50 (see shared/schemas.ts) —
+// a larger selection is chunked into calls of this size rather than one big
+// one, since each item is a sequential DB round trip server-side.
+const BULK_CHUNK_SIZE = 50
 
 const STATUS_TABS: { value: SubmissionStatus; label: string }[] = [
   { value: 'pending', label: 'Pending' },
@@ -23,6 +28,9 @@ const inputClass =
   'w-full rounded-md border border-line bg-surface px-2 py-1 text-sm focus:border-accent focus:ring-3 focus:ring-accent-tint focus:outline-none'
 
 function payloadTitle(submission: Submission): string {
+  if (submission.type === 'edit_mandal') {
+    return submission.mandal ? `Edit: ${submission.mandal.name}` : 'Edit submission'
+  }
   const name = submission.payload.name
   return typeof name === 'string' && name.length > 0
     ? name
@@ -269,7 +277,24 @@ function EditForm({ submission, onDone }: { submission: Submission; onDone: () =
   )
 }
 
-function QueueCard({ submission }: { submission: Submission }) {
+/** Splits an edit_mandal payload's free-text report from its proposed field changes. */
+function splitEditReport(payload: Record<string, unknown>) {
+  const { reporter_message, ...changes } = payload
+  return {
+    message: typeof reporter_message === 'string' ? reporter_message : null,
+    changes,
+  }
+}
+
+function QueueCard({
+  submission,
+  selected,
+  onToggleSelected,
+}: {
+  submission: Submission
+  selected: boolean
+  onToggleSelected: () => void
+}) {
   const utils = trpc.useUtils()
   const [notes, setNotes] = useState('')
   const [isEditing, setIsEditing] = useState(false)
@@ -280,6 +305,7 @@ function QueueCard({ submission }: { submission: Submission }) {
   const isPending = submission.status === 'pending'
   const canEdit = isPending && submission.type === 'new_mandal'
   const busyDecision = review.isPending ? review.variables?.decision : undefined
+  const editReport = submission.type === 'edit_mandal' ? splitEditReport(submission.payload) : null
 
   function act(decision: 'approve' | 'reject') {
     review.mutate({
@@ -292,13 +318,34 @@ function QueueCard({ submission }: { submission: Submission }) {
   return (
     <li className="flex flex-col gap-3 rounded-lg border border-line bg-surface p-4 shadow-sm">
       <div className="flex items-start justify-between gap-4">
-        <div>
-          <h3 className="font-bold">{payloadTitle(submission)}</h3>
-          <p className="text-xs text-ink-faint">
-            {submission.type === 'new_mandal' ? 'New mandal' : 'Edit'} · submitted{' '}
-            {new Date(submission.submitted_at).toLocaleString()}
-            {submission.submitter_contact ? ` · contact: ${submission.submitter_contact}` : ''}
-          </p>
+        <div className="flex items-start gap-3">
+          {isPending && (
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={onToggleSelected}
+              aria-label={`Select ${payloadTitle(submission)}`}
+              className="mt-1 size-4 flex-none"
+            />
+          )}
+          <div>
+            <h3 className="font-bold">{payloadTitle(submission)}</h3>
+            <p className="text-xs text-ink-faint">
+              {submission.type === 'new_mandal' ? 'New mandal' : 'Edit report'} · submitted{' '}
+              {new Date(submission.submitted_at).toLocaleString()}
+              {submission.submitter_contact ? ` · contact: ${submission.submitter_contact}` : ''}
+            </p>
+            {submission.type === 'edit_mandal' && submission.mandal && (
+              <a
+                href={`/mandal/${submission.mandal.slug}`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs font-bold text-accent-deep hover:underline"
+              >
+                View live mandal ↗
+              </a>
+            )}
+          </div>
         </div>
         {canEdit && !isEditing && (
           <button
@@ -314,7 +361,15 @@ function QueueCard({ submission }: { submission: Submission }) {
       {isEditing ? (
         <EditForm submission={submission} onDone={() => setIsEditing(false)} />
       ) : (
-        <PayloadFields payload={submission.payload} />
+        <>
+          {editReport?.message && (
+            <p className="rounded-md border border-accent/30 bg-accent-tint p-2 text-sm whitespace-pre-wrap">
+              <span className="font-bold">Reporter says: </span>
+              {editReport.message}
+            </p>
+          )}
+          <PayloadFields payload={editReport ? editReport.changes : submission.payload} />
+        </>
       )}
 
       {submission.moderator_notes && (
@@ -365,13 +420,187 @@ function QueueCard({ submission }: { submission: Submission }) {
   )
 }
 
+type BulkSummary = { approved: number; rejected: number; errors: string[] }
+
+function BulkActionBar({
+  status,
+  selected,
+  totalPending,
+  onSelectAllOnPage,
+  onSelectAllPending,
+  onClear,
+}: {
+  status: SubmissionStatus
+  selected: Set<string>
+  totalPending: number
+  onSelectAllOnPage: () => void
+  onSelectAllPending: () => Promise<void>
+  onClear: () => void
+}) {
+  const utils = trpc.useUtils()
+  const [notes, setNotes] = useState('')
+  const [summary, setSummary] = useState<BulkSummary | null>(null)
+  const [isSelectingAll, setIsSelectingAll] = useState(false)
+  const bulkReview = trpc.submissions.bulkReview.useMutation()
+
+  if (status !== 'pending') return null
+
+  async function run(decision: 'approve' | 'reject') {
+    setSummary(null)
+    const ids = [...selected]
+    const outcome: BulkSummary = { approved: 0, rejected: 0, errors: [] }
+
+    for (let i = 0; i < ids.length; i += BULK_CHUNK_SIZE) {
+      const chunk = ids.slice(i, i + BULK_CHUNK_SIZE)
+      let results: SubmissionsBulkReviewOutput['results']
+      try {
+        const response = await bulkReview.mutateAsync({
+          submissionIds: chunk,
+          decision,
+          moderatorNotes: notes.trim() || undefined,
+        })
+        results = response.results
+      } catch (err) {
+        outcome.errors.push(err instanceof Error ? err.message : 'Unexpected error')
+        continue
+      }
+      for (const result of results) {
+        if (result.status === 'approved') outcome.approved += 1
+        else if (result.status === 'rejected') outcome.rejected += 1
+        else outcome.errors.push(result.error ?? 'Unknown error')
+      }
+    }
+
+    setSummary(outcome)
+    onClear()
+    await utils.submissions.list.invalidate()
+  }
+
+  async function selectAllPending() {
+    setIsSelectingAll(true)
+    try {
+      await onSelectAllPending()
+    } finally {
+      setIsSelectingAll(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border border-accent/40 bg-accent-tint p-4">
+      <div className="flex flex-wrap items-center gap-3 text-sm">
+        <span className="font-bold">{selected.size} selected</span>
+        <button type="button" onClick={onSelectAllOnPage} className="font-semibold hover:underline">
+          Select all on this page
+        </button>
+        <button
+          type="button"
+          onClick={selectAllPending}
+          disabled={isSelectingAll}
+          className="font-semibold hover:underline disabled:opacity-50"
+        >
+          {isSelectingAll ? 'Loading…' : `Select all ${totalPending} pending`}
+        </button>
+        {selected.size > 0 && (
+          <button type="button" onClick={onClear} className="font-semibold hover:underline">
+            Clear selection
+          </button>
+        )}
+      </div>
+
+      {selected.size > 0 && (
+        <>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-semibold text-ink-faint">
+              Notes applied to every selected item (optional)
+            </span>
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={2}
+              className={inputClass}
+            />
+          </label>
+
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={() => run('reject')}
+              disabled={bulkReview.isPending}
+              className={`${buttonClass} border border-line bg-surface text-ink-soft hover:border-ink-faint hover:text-ink`}
+            >
+              {bulkReview.isPending ? 'Working…' : `Reject ${selected.size}`}
+            </button>
+            <button
+              type="button"
+              onClick={() => run('approve')}
+              disabled={bulkReview.isPending}
+              className={`${buttonClass} bg-accent text-white hover:bg-accent-deep`}
+            >
+              {bulkReview.isPending ? 'Working…' : `Approve ${selected.size}`}
+            </button>
+          </div>
+        </>
+      )}
+
+      {summary && (
+        <p className="text-sm">
+          Done — {summary.approved} approved, {summary.rejected} rejected
+          {summary.errors.length > 0 ? `, ${summary.errors.length} failed` : ''}.
+          {summary.errors.length > 0 && (
+            <span className="mt-1 block text-crit">
+              {summary.errors.slice(0, 5).join(' · ')}
+              {summary.errors.length > 5 ? ` · +${summary.errors.length - 5} more` : ''}
+            </span>
+          )}
+        </p>
+      )}
+    </div>
+  )
+}
+
 export function ModerationQueue() {
   const [status, setStatus] = useState<SubmissionStatus>('pending')
+  const [page, setPage] = useState(1)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const utils = trpc.useUtils()
   const { data, error, isLoading } = trpc.submissions.list.useQuery({
     status,
-    page: 1,
+    page,
     pageSize: PAGE_SIZE,
   })
+
+  const totalPages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1
+
+  function changeStatus(next: SubmissionStatus) {
+    setStatus(next)
+    setPage(1)
+    setSelected(new Set())
+  }
+
+  function toggleSelected(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function selectAllOnPage() {
+    if (!data) return
+    setSelected((prev) => {
+      const next = new Set(prev)
+      for (const item of data.items) {
+        if (item.status === 'pending') next.add(item.id)
+      }
+      return next
+    })
+  }
+
+  async function selectAllPending() {
+    const result = await utils.submissions.listIds.fetch({ status: 'pending' })
+    setSelected(new Set(result.ids))
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -380,7 +609,7 @@ export function ModerationQueue() {
           <button
             key={tab.value}
             type="button"
-            onClick={() => setStatus(tab.value)}
+            onClick={() => changeStatus(tab.value)}
             aria-pressed={status === tab.value}
             className={`rounded-full border px-3 py-1 text-sm font-bold ${
               status === tab.value
@@ -399,16 +628,56 @@ export function ModerationQueue() {
         </p>
       )}
 
+      <BulkActionBar
+        status={status}
+        selected={selected}
+        totalPending={data?.total ?? 0}
+        onSelectAllOnPage={selectAllOnPage}
+        onSelectAllPending={selectAllPending}
+        onClear={() => setSelected(new Set())}
+      />
+
       {isLoading ? (
         <p role="status" className="py-12 text-center text-ink-faint">
           Loading…
         </p>
       ) : data && data.items.length > 0 ? (
-        <ul className="flex flex-col gap-3">
-          {data.items.map((submission) => (
-            <QueueCard key={submission.id} submission={submission} />
-          ))}
-        </ul>
+        <>
+          <ul className="flex flex-col gap-3">
+            {data.items.map((submission) => (
+              <QueueCard
+                key={submission.id}
+                submission={submission}
+                selected={selected.has(submission.id)}
+                onToggleSelected={() => toggleSelected(submission.id)}
+              />
+            ))}
+          </ul>
+
+          {totalPages > 1 && (
+            <div className="flex items-center justify-center gap-4 text-sm">
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+                className="font-semibold hover:underline disabled:opacity-40"
+              >
+                Previous
+              </button>
+              <span className="text-ink-faint">
+                Page {page} of {totalPages}
+              </span>
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages}
+                className="font-semibold hover:underline disabled:opacity-40"
+              >
+                Next
+              </button>
+            </div>
+          )}
+        </>
       ) : (
         <p role="status" className="py-12 text-center text-ink-faint">
           Nothing here.
