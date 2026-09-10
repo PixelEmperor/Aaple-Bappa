@@ -1,13 +1,18 @@
 """Stage 5 of the seeding pipeline (design-plan.md Milestone 2): idempotent
 upsert of cleaned+geocoded rows into `mandals`, setting source='seed' and
 verification_status='verified' per the milestone spec. Uploads a matching
-compressed photo (if present) to the mandal-photos bucket and saves its
-public URL. Safe to re-run: upserts on slug, so a partial failure mid-batch
-can just be re-run rather than needing a rollback.
+compressed photo (if present) to Cloudflare R2 and saves its public URL.
+Safe to re-run: upserts on slug, so a partial failure mid-batch can just be
+re-run rather than needing a rollback.
 
 Requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (see .env.example) — the
 service-role key bypasses RLS, matching design-plan.md's note that seed
-imports write directly, not through the public submission flow.
+imports write directly, not through the public submission flow. Photo
+uploads additionally require the CLOUDFLARE_R2_* vars (see .env.example) —
+the app itself moved photo storage off Supabase Storage onto R2
+(src/lib/r2.ts), and next.config.ts's image `remotePatterns` only allows the
+R2 host, so a photo uploaded anywhere else wouldn't render through
+next/image regardless of what URL this script wrote to `mandals.photo_url`.
 
 Usage:
     python import_to_supabase.py --input seed_data/geocoded.csv
@@ -20,6 +25,7 @@ import os
 import sys
 from pathlib import Path
 
+import boto3
 import pandas as pd
 from dotenv import load_dotenv
 from supabase import Client, create_client
@@ -29,7 +35,11 @@ from geocode import within_mmr_bbox
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-PHOTO_BUCKET = "mandal-photos"
+# Mirrors apps/web/src/lib/r2.ts's key layout one level up: that file writes
+# submitter-uploaded photos under "submissions/"; this script's are seed-time
+# imports, not user submissions, so they get their own prefix rather than
+# colliding in the same namespace.
+R2_KEY_PREFIX = "seed"
 
 REQUIRED_COLUMNS = ("name", "slug", "area", "lat", "lng")
 OPTIONAL_COLUMNS = (
@@ -51,6 +61,28 @@ def make_client() -> Client:
     if not url or not key:
         raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set (see .env.example)")
     return create_client(url, key)
+
+
+def _require_r2_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError(f"{name} must be set to upload photos (see .env.example)")
+    return value
+
+
+def make_r2_client():
+    """S3-compatible client for Cloudflare R2 — same account as
+    apps/web/src/lib/r2.ts, so a photo this script uploads and one the app
+    uploads land in the same bucket under different key prefixes."""
+    load_dotenv()
+    account_id = _require_r2_env("CLOUDFLARE_R2_ACCOUNT_ID")
+    return boto3.client(
+        "s3",
+        endpoint_url=f"https://{account_id}.r2.cloudflarestorage.com",
+        aws_access_key_id=_require_r2_env("CLOUDFLARE_R2_ACCESS_KEY_ID"),
+        aws_secret_access_key=_require_r2_env("CLOUDFLARE_R2_SECRET_ACCESS_KEY"),
+        region_name="auto",
+    )
 
 
 def row_to_record(row: pd.Series) -> dict:
@@ -87,24 +119,31 @@ def row_to_record(row: pd.Series) -> dict:
     return record
 
 
-def upload_photo(client: Client, slug: str, photos_dir: Path) -> str | None:
+def upload_photo(r2_client, slug: str, photos_dir: Path) -> str | None:
     photo_path = photos_dir / f"{slug}.jpg"
     if not photo_path.exists():
         return None
 
-    storage_path = f"{slug}.jpg"
+    key = f"{R2_KEY_PREFIX}/{slug}.jpg"
+    bucket = _require_r2_env("CLOUDFLARE_R2_BUCKET_NAME")
     with open(photo_path, "rb") as f:
-        client.storage.from_(PHOTO_BUCKET).upload(
-            storage_path,
-            f,
-            file_options={"content-type": "image/jpeg", "upsert": "true"},
-        )
-    return client.storage.from_(PHOTO_BUCKET).get_public_url(storage_path)
+        r2_client.put_object(Bucket=bucket, Key=key, Body=f, ContentType="image/jpeg")
+
+    # CLOUDFLARE_R2_PUBLIC_URL is the bucket's public base (its r2.dev
+    # subdomain or a custom domain mapped to it) — configured once per
+    # environment, same as apps/web/src/server/photo-upload.ts.
+    public_url = _require_r2_env("CLOUDFLARE_R2_PUBLIC_URL")
+    return f"{public_url}/{key}"
 
 
 def import_rows(client: Client, df: pd.DataFrame, photos_dir: Path) -> tuple[int, int]:
     imported = 0
     rejected = 0
+
+    # Built lazily, and only once: if photos_dir doesn't exist at all, no row
+    # has a photo to upload, so a run with no photos never has to require R2
+    # credentials to be configured.
+    r2_client = make_r2_client() if photos_dir.exists() else None
 
     for _, row in df.iterrows():
         missing = [c for c in REQUIRED_COLUMNS if c not in row.index or pd.isna(row[c])]
@@ -123,7 +162,7 @@ def import_rows(client: Client, df: pd.DataFrame, photos_dir: Path) -> tuple[int
             continue
 
         record = row_to_record(row)
-        photo_url = upload_photo(client, row["slug"], photos_dir)
+        photo_url = upload_photo(r2_client, row["slug"], photos_dir) if r2_client else None
         if photo_url:
             record["photo_url"] = photo_url
 

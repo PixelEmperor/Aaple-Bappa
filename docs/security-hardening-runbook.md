@@ -221,10 +221,11 @@ but it is no longer the difference between a working and a broken deploy.
   `cf-connecting-ip`. `session_id` stays client-minted by design, so the IP key is the real
   limit. Enabling Vercel deployment protection, so the origin is only reachable through
   Cloudflare, would close the remainder.
-- **Seed photos vs. R2.** `data-pipeline/import_to_supabase.py` still uploads to the
-  Supabase Storage `mandal-photos` bucket — which `0011` now drops — while the app serves
-  from R2 and `next.config.ts`'s `remotePatterns` only allows the R2 host. The pipeline
-  needs repointing at R2 before it's next run.
+- ~~**Seed photos vs. R2.**~~ Resolved: `data-pipeline/import_to_supabase.py` now uploads
+  to Cloudflare R2 (via `boto3`, mirroring `apps/web/src/lib/r2.ts`'s client config) under a
+  `seed/` key prefix, instead of the Supabase Storage `mandal-photos` bucket that `0011`
+  dropped. Requires the `CLOUDFLARE_R2_*` vars (see `data-pipeline/.env.example`) — only if
+  `--photos-dir` actually contains photos to upload; a photo-less run needs no R2 config.
 - **The raw form export** (`Untitled form (Responses).xlsx`) held real submitter names and
   phone numbers in the repo root. It was gitignored and never committed, and has been moved
   out of the working tree to `../aaple-bappa-private/`; it still wants somewhere with real
