@@ -257,6 +257,13 @@ vi.mock('next/cache', () => ({
   revalidatePath: () => {},
 }))
 
+// Image validation and the R2 upload itself are covered by
+// photo-upload.test.ts; here only the router glue (photo_data_url in ->
+// photo_url out, on both new_mandal and edit_mandal) is under test.
+vi.mock('../photo-upload', () => ({
+  uploadSubmissionPhoto: async () => 'https://photos.example.com/fake.jpg',
+}))
+
 /**
  * Imported here rather than inside each test: pulling in the whole router
  * tree (tRPC, Zod, Supabase, Sentry, Fuse) is the slowest thing this file
@@ -456,5 +463,63 @@ describe('submit → approve → appears in mandals.list', () => {
 
     const directory = await anonCaller.mandals.list({ page: 1, pageSize: 24 })
     expect(directory.items.map((mandal) => mandal.slug)).toContain('bulk-mandal-two')
+  })
+
+  it('uploads a reported replacement photo and applies it once the edit is approved', async () => {
+    fakeDb.tables.mandals.push({
+      id: 'a2f4c8b1-9d3e-4a5f-8b6c-1e2d3f4a5b6c',
+      name: 'Photo Mandal',
+      slug: 'photo-mandal',
+      area: 'Photo Area',
+      zone: null,
+      lat: 19.05,
+      lng: 72.85,
+      established_year: null,
+      description: null,
+      history: null,
+      nearest_station: null,
+      tags: null,
+      timings: null,
+      official_contact: null,
+      photo_url: null,
+      is_public: true,
+      source: 'crowdsourced',
+      verification_status: 'unverified',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+
+    const anonCaller = appRouter.createCaller({ supabase: fakeDb.client as never, user: null })
+    const moderatorCaller = appRouter.createCaller({
+      supabase: fakeDb.client as never,
+      user: { id: 'moderator-1' } as never,
+    })
+
+    const created = await anonCaller.submissions.create({
+      type: 'edit_mandal',
+      payload: {
+        mandal_id: 'a2f4c8b1-9d3e-4a5f-8b6c-1e2d3f4a5b6c',
+        message: 'The photo on file is outdated, here is a current one.',
+        photo_data_url: 'data:image/jpeg;base64,ZmFrZQ==',
+      },
+      session_id: randomUUID(),
+    })
+    expect(created.status).toBe('created')
+    if (created.status !== 'created') throw new Error('unreachable')
+
+    // uploadSubmissionPhoto is mocked above — this checks submissions.create
+    // calls it and stores the resulting URL, not the upload itself.
+    const stored = fakeDb.tables.submissions.find((row) => row.id === created.submissionId)
+    expect(stored?.payload).toMatchObject({ photo_url: 'https://photos.example.com/fake.jpg' })
+
+    await moderatorCaller.submissions.review({
+      submissionId: created.submissionId,
+      decision: 'approve',
+    })
+
+    const updatedMandal = fakeDb.tables.mandals.find(
+      (row) => row.id === 'a2f4c8b1-9d3e-4a5f-8b6c-1e2d3f4a5b6c'
+    )
+    expect(updatedMandal?.photo_url).toBe('https://photos.example.com/fake.jpg')
   })
 })

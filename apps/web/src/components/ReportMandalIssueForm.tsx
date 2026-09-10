@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { compressImageToDataUrl } from '@/lib/compress-image'
 import { getOrCreateSessionId } from '@/lib/session-id'
 import { trpc } from '@/lib/trpc/react'
 import { ZONES, type Mandal } from '@/shared/schemas'
@@ -16,6 +17,7 @@ type MandalSummary = Pick<
   | 'nearest_station'
   | 'description'
   | 'official_contact'
+  | 'photo_url'
 >
 
 type FormState = {
@@ -29,6 +31,7 @@ type FormState = {
   description: string
   officialContact: string
   hidePublicly: boolean
+  photoFile: File | null
   submitterContact: string
 }
 
@@ -43,6 +46,7 @@ const INITIAL_STATE: FormState = {
   description: '',
   officialContact: '',
   hidePublicly: false,
+  photoFile: null,
   submitterContact: '',
 }
 
@@ -86,12 +90,15 @@ export function ReportMandalIssueForm({ mandal }: { mandal: MandalSummary }) {
   async function handleSubmit() {
     setErrorMessage(null)
     try {
+      const photoDataUrl = form.photoFile ? await compressImageToDataUrl(form.photoFile) : undefined
+
       await createSubmission.mutateAsync({
         type: 'edit_mandal',
         payload: {
           mandal_id: mandal.id,
           message: form.message.trim(),
           ...buildChanges(form),
+          photo_data_url: photoDataUrl,
         },
         submitter_contact: form.submitterContact.trim() || undefined,
         session_id: getOrCreateSessionId(),
@@ -265,6 +272,25 @@ export function ReportMandalIssueForm({ mandal }: { mandal: MandalSummary }) {
               onChange={(e) => update('hidePublicly', e.target.checked)}
             />
             This shouldn&apos;t be listed publicly (e.g. a private/society Ganpati)
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-semibold text-ink-faint">
+              Replace the photo{mandal.photo_url ? '' : ' (none on file yet)'}
+            </span>
+            {mandal.photo_url && (
+              // eslint-disable-next-line @next/next/no-img-element -- small "current photo" preview, not worth next/image's remote-pattern config for a photo about to be replaced
+              <img
+                src={mandal.photo_url}
+                alt="Current"
+                className="h-20 w-32 rounded-md border border-line object-cover"
+              />
+            )}
+            <input
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              onChange={(e) => update('photoFile', e.target.files?.[0] ?? null)}
+              className={inputClass}
+            />
           </label>
         </div>
       )}

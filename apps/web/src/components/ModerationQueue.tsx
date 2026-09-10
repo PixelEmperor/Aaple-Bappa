@@ -47,7 +47,18 @@ function PayloadFields({ payload }: { payload: Record<string, unknown> }) {
       {entries.map(([key, value]) => (
         <div key={key} className="flex gap-2">
           <dt className="font-semibold text-ink-faint">{key}</dt>
-          <dd className="truncate">{Array.isArray(value) ? value.join(', ') : String(value)}</dd>
+          {key === 'photo_url' && typeof value === 'string' ? (
+            <dd>
+              {/* eslint-disable-next-line @next/next/no-img-element -- moderator-only thumbnail of an arbitrary submitted URL, not worth next/image's remote-pattern allowlist */}
+              <img
+                src={value}
+                alt=""
+                className="h-16 w-24 rounded border border-line object-cover"
+              />
+            </dd>
+          ) : (
+            <dd className="truncate">{Array.isArray(value) ? value.join(', ') : String(value)}</dd>
+          )}
         </div>
       ))}
     </dl>

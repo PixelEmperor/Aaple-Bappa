@@ -139,6 +139,7 @@ export default async function MandalDetailPage({ params }: PageProps<'/mandal/[s
               nearest_station: mandal.nearest_station,
               description: mandal.description,
               official_contact: mandal.official_contact,
+              photo_url: mandal.photo_url,
             }}
           />
         </div>

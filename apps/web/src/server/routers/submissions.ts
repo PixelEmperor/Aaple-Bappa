@@ -86,7 +86,7 @@ export const submissionsRouter = router({
           })
         }
 
-        const { mandal_id, message, ...changes } = input.payload
+        const { mandal_id, message, photo_data_url, ...changes } = input.payload
         // reporter_message isn't a mandal column — buildMandalEditPatch's
         // whitelist (server/mandal-approval.ts) ignores unknown keys, so it
         // rides along in payload purely for the moderator to read, same as
@@ -94,6 +94,9 @@ export const submissionsRouter = router({
         const payload: Record<string, unknown> = { reporter_message: message }
         for (const [key, value] of Object.entries(changes)) {
           if (value !== undefined) payload[key] = value
+        }
+        if (photo_data_url) {
+          payload.photo_url = await uploadSubmissionPhoto(photo_data_url)
         }
 
         const submissionId = randomUUID()

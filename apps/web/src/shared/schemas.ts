@@ -178,11 +178,14 @@ export type NewMandalPayload = z.infer<typeof newMandalPayloadSchema>
  * schema doesn't distinguish "no opinion" from "leave unchanged" — that's
  * handled client-side by omitting the key entirely.
  *
- * Deliberately narrower than a moderator's edit surface: no lat/lng or
- * photo_url here (those need a map pin / upload, not a text field) and no
- * `history` (a longer rewrite belongs with a moderator, not a drive-by
- * report). Whatever is proposed still only ever lands on the mandal via
- * buildMandalEditPatch's own whitelist + validation at approval time.
+ * Deliberately narrower than a moderator's edit surface: no lat/lng here
+ * (needs a map pin, not a text field) and no `history` (a longer rewrite
+ * belongs with a moderator, not a drive-by report). A replacement photo is
+ * allowed — same compressed data: URL as newMandalPayloadSchema, uploaded
+ * to R2 server-side in submissions.create rather than stored inline
+ * (../server/routers/submissions.ts). Whatever is proposed still only ever
+ * lands on the mandal via buildMandalEditPatch's own whitelist + validation
+ * at approval time.
  */
 export const editMandalPayloadSchema = z.object({
   mandal_id: z.uuid(),
@@ -196,6 +199,7 @@ export const editMandalPayloadSchema = z.object({
   description: z.string().trim().max(2000).optional(),
   official_contact: z.string().trim().max(200).optional(),
   is_public: z.boolean().optional(),
+  photo_data_url: z.string().max(MAX_IMAGE_DATA_URL_LENGTH).optional(),
 })
 
 export type EditMandalPayload = z.infer<typeof editMandalPayloadSchema>
