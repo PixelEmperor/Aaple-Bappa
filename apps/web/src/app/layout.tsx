@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 import './globals.css'
 import { Header } from '@/components/Header'
+import { siteUrl } from '@/lib/site-url'
 import { themeInitScript } from '@/lib/theme'
 import { Providers } from './providers'
 
@@ -16,6 +17,14 @@ const geistMono = Geist_Mono({
 })
 
 export const metadata: Metadata = {
+  // Resolves every relative URL in a page's own `metadata` export (OG/twitter
+  // images, canonical links) against this origin — without it, a mandal page
+  // whose openGraph.images was ever a root-relative path would share as a
+  // broken image on X/WhatsApp/etc. Every mandal photo happens to already be
+  // an absolute R2 URL (mandal/[slug]/page.tsx), so this is currently
+  // dormant insurance more than an active fix, but it's the standard the
+  // Metadata API expects a production site to set.
+  metadataBase: new URL(siteUrl()),
   title: 'Aaple Bappa',
   description:
     'A free, community-built guide to Ganpati mandals across the Mumbai Metropolitan Region.',
