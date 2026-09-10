@@ -41,17 +41,30 @@ comment on column submissions.reviewed_by is
 -- violates these before adding them.
 -- ---------------------------------------------------------------------------
 
-alter table mandals
-  add constraint mandals_lat_range check (lat between -90 and 90),
-  add constraint mandals_lng_range check (lng between -180 and 180),
-  add constraint mandals_established_year_range
-    check (established_year is null or established_year between 1800 and 2100);
-
--- An edit_mandal row with no target is unapprovable dead weight — review()
--- rejects it with 'Edit submission is missing its target mandal.' forever.
-alter table submissions
-  add constraint submissions_edit_requires_mandal
-    check (type <> 'edit_mandal' or mandal_id is not null);
+-- Guarded rather than a bare `add constraint`, because Postgres has no
+-- `add constraint if not exists` and a re-run would abort the migration on
+-- "constraint already exists" — which matters here: the first attempt at this
+-- file failed partway (see the storage note below) and had to be re-run.
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'mandals_lat_range') then
+    alter table mandals add constraint mandals_lat_range check (lat between -90 and 90);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'mandals_lng_range') then
+    alter table mandals add constraint mandals_lng_range check (lng between -180 and 180);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'mandals_established_year_range') then
+    alter table mandals add constraint mandals_established_year_range
+      check (established_year is null or established_year between 1800 and 2100);
+  end if;
+  -- An edit_mandal row with no target is unapprovable dead weight — review()
+  -- rejects it with 'Edit submission is missing its target mandal.' forever.
+  if not exists (select 1 from pg_constraint where conname = 'submissions_edit_requires_mandal') then
+    alter table submissions add constraint submissions_edit_requires_mandal
+      check (type <> 'edit_mandal' or mandal_id is not null);
+  end if;
+end;
+$$;
 
 -- ---------------------------------------------------------------------------
 -- Privileges: 0009 revoked all on submissions/moderators/rate_limits but only
@@ -71,14 +84,24 @@ grant select on helplines to anon, authenticated;
 -- ---------------------------------------------------------------------------
 -- Retire the pre-R2 Supabase Storage bucket. Photo storage moved to
 -- Cloudflare R2 (src/server/photo-upload.ts) and next.config.ts's image
--- allowlist only covers the R2 host, so this bucket is unreachable from the
--- app — but it was still `public = true` with a world-readable policy, and
--- anon could list its contents. Verified empty (0 objects) and no mandals
--- row references it before dropping.
+-- allowlist only covers the R2 host, so the bucket was unreachable from the
+-- app — but it was still `public = true` and anon could list its contents.
+--
+-- The bucket ITSELF is not dropped here. Supabase guards storage.buckets
+-- with a trigger (storage.protect_delete) that raises
+-- `42501 Direct deletion from storage tables is not allowed` on any SQL
+-- DELETE, which aborts the whole migration — so it was removed out-of-band
+-- through the Storage API instead:
+--
+--   POST   /storage/v1/bucket/mandal-photos/empty
+--   DELETE /storage/v1/bucket/mandal-photos
+--
+-- Already done against this project (verified: `GET /storage/v1/bucket`
+-- returns []). Only the policy drop belongs in SQL, and it's idempotent, so
+-- re-running this migration is safe.
 -- ---------------------------------------------------------------------------
 
 drop policy if exists mandal_photos_public_read on storage.objects;
-delete from storage.buckets where id = 'mandal-photos';
 
 -- ---------------------------------------------------------------------------
 -- Approve functions, rebuilt.

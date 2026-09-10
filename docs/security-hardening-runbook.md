@@ -179,8 +179,13 @@ Also in this pass:
 - **Write grants revoked** on `mandals`/`helplines` for `anon`/`authenticated`, re-granting
   only `select`. RLS already blocked anon writes (verified live: an anon `PATCH` returns
   zero rows and leaves data intact), so this removes the reliance on RLS as the sole gate.
-- **The pre-R2 `mandal-photos` bucket is dropped.** It was still `public = true` and anon
-  could list it. Verified empty, with no `mandals` row referencing it.
+- **The pre-R2 `mandal-photos` bucket is gone.** It was still `public = true` and anon could
+  list it. Verified empty with no `mandals` row referencing it first. Note that it could
+  *not* be dropped in SQL: Supabase's `storage.protect_delete` trigger raises
+  `42501 Direct deletion from storage tables is not allowed` on any DELETE against
+  `storage.buckets`, which aborts the whole migration. It was removed through the Storage
+  API instead (`POST /storage/v1/bucket/<id>/empty`, then `DELETE /storage/v1/bucket/<id>`),
+  already done against this project; the migration only drops the read policy.
 
 App-side changes shipping alongside: `Sec-Fetch-Site` as the primary CSRF signal (below),
 `maxDuration = 60` on the tRPC route with a smaller bulk chunk size, one-hop-at-a-time
