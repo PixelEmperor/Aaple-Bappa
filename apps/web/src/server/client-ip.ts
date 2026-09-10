@@ -17,11 +17,22 @@ import { headers } from 'next/headers'
  * can't forge (Cloudflare and Vercel both overwrite theirs), and only fall
  * back to X-Forwarded-For — from the right end, the last hop appended by the
  * closest trusted proxy.
+ *
+ * Ordering note, and the reason it isn't alphabetical: `x-real-ip` comes
+ * first because Vercel — the host that actually terminates this request —
+ * always overwrites it, so a client-supplied value never survives. Reading
+ * `cf-connecting-ip` first was wrong: Cloudflare only sets that header when
+ * the request genuinely passes through Cloudflare, and the Vercel deployment
+ * URL stays directly reachable, so an attacker could POST straight to
+ * *.vercel.app with a `cf-connecting-ip` of their choosing and get a fresh
+ * rate-limit bucket per request. It's kept only as a fallback for the case
+ * where Vercel's own header is somehow absent, since a forged value there is
+ * no worse than the 'unknown' it would otherwise fall through to.
  */
 export async function clientIp(): Promise<string> {
   const headerList = await headers()
 
-  const trusted = headerList.get('cf-connecting-ip') ?? headerList.get('x-real-ip')
+  const trusted = headerList.get('x-real-ip') ?? headerList.get('cf-connecting-ip')
   if (trusted) return trusted.trim()
 
   // Vercel's own copy of the chain; its last entry is the peer Vercel saw.

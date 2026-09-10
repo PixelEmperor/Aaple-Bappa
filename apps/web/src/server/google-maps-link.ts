@@ -26,6 +26,15 @@ const SHORT_LINK_HOSTS = new Set(['maps.app.goo.gl', 'goo.gl'])
 // lookup; if it hasn't answered in 5s it isn't going to.
 const FETCH_TIMEOUT_MS = 5000
 
+// Redirects are followed one hop at a time so every intermediate Location can
+// be re-checked against ALLOWED_HOSTS. `redirect: 'follow'` checked only the
+// *final* URL, which meant the fetches in between were made to whatever the
+// chain pointed at — a shortener whose target is attacker-chosen is enough to
+// get this server to issue requests at `169.254.169.254` or a localhost port,
+// and only the last hop's failure was ever noticed. A short link needs one
+// hop, maybe two; three is slack, not a budget to spend.
+const MAX_REDIRECTS = 3
+
 function parseAllowedGoogleUrl(url: string): URL | null {
   let parsed: URL
   try {
@@ -54,20 +63,44 @@ export async function resolveGoogleMapsLink(
 
   if (!SHORT_LINK_HOSTS.has(parsed.hostname)) return null
 
-  let response: Response
-  try {
-    response = await fetch(parsed.toString(), {
-      redirect: 'follow',
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    })
-  } catch {
-    return null
+  let current = parsed
+
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    let response: Response
+    try {
+      response = await fetch(current.toString(), {
+        // Manual, so this loop — not undici — decides whether the next hop is
+        // a host we're willing to connect to.
+        redirect: 'manual',
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      })
+    } catch {
+      return null
+    }
+
+    const location = response.headers.get('location')
+    if (!location) {
+      // End of the chain. Coordinates may be in the URL we landed on.
+      return extractLatLngFromGoogleMapsUrl(current.toString())
+    }
+
+    // Relative Locations are legal, so resolve against the current URL before
+    // validating — and validate before the next iteration fetches it.
+    let next: URL
+    try {
+      next = new URL(location, current)
+    } catch {
+      return null
+    }
+
+    const allowedNext = parseAllowedGoogleUrl(next.toString())
+    if (!allowedNext) return null
+
+    const direct = extractLatLngFromGoogleMapsUrl(allowedNext.toString())
+    if (direct) return direct
+
+    current = allowedNext
   }
 
-  // The redirect chain is Google's own to control, but the final hop still
-  // gets the same host check before its coordinates are trusted.
-  const resolved = parseAllowedGoogleUrl(response.url)
-  if (!resolved) return null
-
-  return extractLatLngFromGoogleMapsUrl(resolved.toString())
+  return null
 }

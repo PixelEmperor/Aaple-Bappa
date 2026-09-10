@@ -31,6 +31,26 @@ describe('buildMandalFilters', () => {
     ])
   })
 
+  /**
+   * Interpolated raw, a search of `%` produced the pattern `%%%` — every row,
+   * returned as though it were a filtered result — and `_` matched any single
+   * character. A searched wildcard should match itself.
+   */
+  it('escapes LIKE wildcards so a search term matches literally', () => {
+    expect(buildMandalFilters(input({ search: '%' }))).toEqual([
+      { type: 'ilike', column: 'name', value: '%\\%%' },
+    ])
+    expect(buildMandalFilters(input({ search: 'a_b' }))).toEqual([
+      { type: 'ilike', column: 'name', value: '%a\\_b%' },
+    ])
+  })
+
+  it('escapes backslashes before the wildcards it adds', () => {
+    expect(buildMandalFilters(input({ search: 'a\\%b' }))).toEqual([
+      { type: 'ilike', column: 'name', value: '%a\\\\\\%b%' },
+    ])
+  })
+
   it('builds eq filters for area and zone', () => {
     expect(buildMandalFilters(input({ area: 'Lalbaug', zone: 'Central Mumbai' }))).toEqual([
       { type: 'eq', column: 'area', value: 'Lalbaug' },

@@ -12,20 +12,35 @@ import { photoUrlSchema, TAGS, ZONES } from '@/shared/schemas'
 // type='new_mandal' (see routers/submissions.ts) — already mandal-column-shaped
 // (lat/lng resolved, photo uploaded to a URL), not the client-facing
 // newMandalPayloadSchema.
+/*
+ * `.nullish()` throughout the optional half, not `.nullable()`.
+ *
+ * These payloads aren't all written by submissions.create — the mandal
+ * dataset import wrote 190 of them directly — and `.nullable()` demands the
+ * key be *present*, so a script that omitted `timings` entirely made the row
+ * unapprovable with a ZodError rather than simply having no timings. Every
+ * one of these columns is nullable in the table
+ * (supabase/migrations/0001_core_schema.sql), so absent and null mean the
+ * same thing here and there's nothing to gain by distinguishing them.
+ *
+ * `is_public` is the exception: the column is `not null default true`, so it
+ * gets an explicit default rather than being allowed through as null, which
+ * would fail the not-null constraint at insert time.
+ */
 export const storedNewMandalPayloadSchema = z.object({
   name: z.string(),
   area: z.string(),
-  zone: z.enum(ZONES).nullable().optional(),
+  zone: z.enum(ZONES).nullish(),
   lat: z.number(),
   lng: z.number(),
-  established_year: z.number().int().nullable(),
-  timings: z.string().nullable(),
-  nearest_station: z.string().nullable(),
-  description: z.string().nullable(),
-  tags: z.array(z.enum(TAGS)).nullable(),
-  official_contact: z.string().nullable(),
-  is_public: z.boolean(),
-  photo_url: photoUrlSchema.nullable(),
+  established_year: z.number().int().nullish(),
+  timings: z.string().nullish(),
+  nearest_station: z.string().nullish(),
+  description: z.string().nullish(),
+  tags: z.array(z.enum(TAGS)).nullish(),
+  official_contact: z.string().nullish(),
+  is_public: z.boolean().default(true),
+  photo_url: photoUrlSchema.nullish(),
 })
 
 export type StoredNewMandalPayload = z.infer<typeof storedNewMandalPayloadSchema>
@@ -132,7 +147,13 @@ export function formatAuditTrail(
   moderatorNotes?: string,
   droppedColumns: readonly string[] = []
 ): string {
-  const priorValues = Object.fromEntries(Object.keys(patch).map((key) => [key, priorMandal[key]]))
+  // Only the columns the RPC will actually change. Both approve functions
+  // write `coalesce(p_patch->>'x', x)`, so a null in the patch is a no-op —
+  // recording it as "overwritten" put changes in the audit trail that never
+  // happened. `tags` is the one exception: its CASE arm treats an explicit
+  // JSON null as "clear the tags", so a null there is a real change.
+  const effectiveKeys = Object.keys(patch).filter((key) => patch[key] !== null || key === 'tags')
+  const priorValues = Object.fromEntries(effectiveKeys.map((key) => [key, priorMandal[key]]))
   const parts = [`[prior values overwritten: ${JSON.stringify(priorValues)}]`]
 
   // Columns buildMandalEditPatch refused: recorded rather than dropped

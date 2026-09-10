@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { allowedOrigins, isRequestOriginAllowed } from './same-origin'
+import { allowedOrigins, isRequestAllowed, isRequestOriginAllowed } from './same-origin'
 
 const ORIGINS = ['https://aaplebappa.in', 'https://web-abc123.vercel.app']
 
@@ -57,9 +57,75 @@ describe('isRequestOriginAllowed', () => {
   })
 })
 
+describe('isRequestAllowed', () => {
+  /**
+   * The point of preferring Sec-Fetch-Site: it needs no configuration to be
+   * correct. With an empty allowlist — which is what production looked like
+   * whenever NEXT_PUBLIC_SITE_URL was unset behind a custom domain — the
+   * Origin check alone refused every mutation the app's own pages made.
+   */
+  it('allows the app’s own pages even when the origin allowlist is empty', () => {
+    expect(
+      isRequestAllowed(
+        { origin: 'https://aaplebappa.in', secFetchSite: 'same-origin', method: 'POST' },
+        []
+      )
+    ).toBe(true)
+  })
+
+  it('allows a user-initiated load, which has no initiating site', () => {
+    expect(isRequestAllowed({ origin: null, secFetchSite: 'none', method: 'POST' }, [])).toBe(true)
+  })
+
+  it('blocks a cross-site mutation even if its Origin somehow appears allowlisted', () => {
+    expect(
+      isRequestAllowed(
+        { origin: 'https://aaplebappa.in', secFetchSite: 'cross-site', method: 'POST' },
+        ORIGINS
+      )
+    ).toBe(false)
+  })
+
+  it('falls back to the allowlist for same-site (a sibling subdomain isn’t automatically trusted)', () => {
+    expect(
+      isRequestAllowed(
+        { origin: 'https://other.aaplebappa.in', secFetchSite: 'same-site', method: 'POST' },
+        ORIGINS
+      )
+    ).toBe(false)
+    expect(
+      isRequestAllowed(
+        { origin: 'https://aaplebappa.in', secFetchSite: 'same-site', method: 'POST' },
+        ORIGINS
+      )
+    ).toBe(true)
+  })
+
+  it('falls back to the allowlist when the header is absent', () => {
+    expect(
+      isRequestAllowed(
+        { origin: 'https://aaplebappa.in', secFetchSite: null, method: 'POST' },
+        ORIGINS
+      )
+    ).toBe(true)
+    expect(
+      isRequestAllowed(
+        { origin: 'https://evil.example', secFetchSite: null, method: 'POST' },
+        ORIGINS
+      )
+    ).toBe(false)
+  })
+})
+
 describe('allowedOrigins', () => {
   it('includes localhost off-platform so local dev works unconfigured', () => {
     expect(allowedOrigins({})).toEqual(['http://localhost:3000'])
+  })
+
+  it('drops localhost in a self-hosted production build', () => {
+    // No VERCEL var, but NODE_ENV=production — a real deploy, where shipping
+    // localhost in the CSRF allowlist serves no purpose.
+    expect(allowedOrigins({ NODE_ENV: 'production' })).toEqual([])
   })
 
   it('drops localhost on Vercel and derives the platform origins', () => {

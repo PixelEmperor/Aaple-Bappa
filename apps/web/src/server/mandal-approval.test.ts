@@ -145,4 +145,49 @@ describe('formatAuditTrail', () => {
     const trail = formatAuditTrail({ name: 'Old Name' }, { name: 'New Name' }, 'Looks legit')
     expect(trail).toBe('Looks legit\n\n[prior values overwritten: {"name":"Old Name"}]')
   })
+
+  /**
+   * Both approve functions write `coalesce(p_patch->>'x', x)`, so a null in
+   * the patch changes nothing — recording it as overwritten logged edits that
+   * never happened.
+   */
+  it('ignores null patch values, which the approve function treats as no-ops', () => {
+    const trail = formatAuditTrail(
+      { name: 'Old Name', description: 'Old description' },
+      { name: 'New Name', description: null }
+    )
+    expect(trail).toBe('[prior values overwritten: {"name":"Old Name"}]')
+  })
+
+  it('still records a null `tags`, which does clear the column', () => {
+    // tags is the exception: its CASE arm treats an explicit JSON null as
+    // "clear the tags" rather than "leave alone".
+    const trail = formatAuditTrail({ tags: ['oldest'] }, { tags: null })
+    expect(trail).toBe('[prior values overwritten: {"tags":["oldest"]}]')
+  })
+})
+
+describe('buildNewMandalInsert tolerance', () => {
+  /**
+   * Payloads aren't only written by submissions.create — the mandal dataset
+   * import wrote 190 directly. Requiring every optional key to be *present*
+   * made a row that merely omitted `timings` unapprovable with a ZodError.
+   */
+  it('accepts a payload that omits the optional columns entirely', () => {
+    const row = buildNewMandalInsert(
+      { name: 'Sparse Mandal', area: 'Sparse Area', lat: 19.07, lng: 72.87 },
+      new Set()
+    )
+
+    expect(row.slug).toBe('sparse-mandal')
+    expect(row.name).toBe('Sparse Mandal')
+    // not-null default true in the table, so it must never come out null.
+    expect(row.is_public).toBe(true)
+  })
+
+  it('still rejects a payload missing a genuinely required column', () => {
+    expect(() =>
+      buildNewMandalInsert({ name: 'No Coordinates', area: 'Nowhere' }, new Set())
+    ).toThrow()
+  })
 })

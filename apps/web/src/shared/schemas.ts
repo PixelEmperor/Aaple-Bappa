@@ -100,7 +100,12 @@ export const mandalsListInputSchema = z.object({
   area: z.string().trim().max(200).optional(),
   zone: z.enum(ZONES).optional(),
   tags: z.array(z.enum(TAGS)).optional(),
-  page: z.number().int().min(1).default(1),
+  // Capped, not just floored: `page` feeds a PostgREST `range()` offset, and
+  // an unbounded one let an anonymous caller ask for offset 500,000,000 on a
+  // query that also runs `count: 'exact'` — a full count plus a deep offset
+  // per request, which is cheap to send and expensive to serve. 1000 pages of
+  // the 500-row max is far past any real directory.
+  page: z.number().int().min(1).max(1000).default(1),
   // Capped at 500, not 100: scope.md §6.2's non-functional target is smooth
   // pan/zoom with 300+ pins loaded on the map view in one request (design-plan.md
   // Milestone 5), so the cap needs headroom above that, not just the

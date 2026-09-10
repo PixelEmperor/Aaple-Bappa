@@ -1,6 +1,7 @@
 import { TRPCError } from '@trpc/server'
 import { randomUUID } from 'node:crypto'
 import { revalidatePath } from 'next/cache'
+import { ZodError } from 'zod'
 import { createSupabaseServiceRoleClient } from '@/lib/supabase/service-role'
 import type { SubmissionsBulkReviewOutput } from '@/shared/schemas'
 import {
@@ -259,18 +260,34 @@ export const submissionsRouter = router({
     .output(submissionsListIdsOutputSchema)
     .query(async ({ input }) => {
       const supabase = createSupabaseServiceRoleClient()
-      const { data, error } = await supabase
-        .from('submissions')
-        .select('id')
-        .eq('status', input.status)
-        .order('submitted_at', { ascending: true })
-        .limit(1000)
 
-      if (error) {
-        throw internalError('submissions.listIds', error)
+      // Paged rather than `.limit(1000)`. supabase/config.toml sets
+      // `max_rows = 1000`, so that limit sat exactly at the ceiling where
+      // PostgREST truncates silently — past 1000 pending rows "select all"
+      // would quietly select a subset and a moderator would believe they'd
+      // cleared the queue. Paging until a short page arrives is the only way
+      // to tell "that's all of them" from "that's all you're getting".
+      const PAGE = 500
+      const ids: string[] = []
+
+      for (let from = 0; ; from += PAGE) {
+        const { data, error } = await supabase
+          .from('submissions')
+          .select('id')
+          .eq('status', input.status)
+          .order('submitted_at', { ascending: true })
+          .range(from, from + PAGE - 1)
+
+        if (error) {
+          throw internalError('submissions.listIds', error)
+        }
+
+        const page = data ?? []
+        ids.push(...page.map((row) => row.id as string))
+        if (page.length < PAGE) break
       }
 
-      return { ids: (data ?? []).map((row) => row.id as string) }
+      return { ids }
     }),
 
   /**
@@ -327,9 +344,9 @@ export const submissionsRouter = router({
   review: moderatorProcedure
     .input(submissionsReviewInputSchema)
     .output(submissionsReviewOutputSchema)
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const supabase = createSupabaseServiceRoleClient()
-      const result = await reviewSubmission(supabase, input)
+      const result = await reviewSubmission(supabase, { ...input, reviewedBy: ctx.user.id })
 
       // Approved content is now live — refresh the ISR pages that cached its
       // absence (design-plan.md Milestone 8).
@@ -353,7 +370,7 @@ export const submissionsRouter = router({
   bulkReview: moderatorProcedure
     .input(submissionsBulkReviewInputSchema)
     .output(submissionsBulkReviewOutputSchema)
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const supabase = createSupabaseServiceRoleClient()
       const results: SubmissionsBulkReviewOutput['results'] = []
       const approvedSlugs = new Set<string>()
@@ -368,6 +385,7 @@ export const submissionsRouter = router({
             submissionId,
             decision: input.decision,
             moderatorNotes: input.moderatorNotes,
+            reviewedBy: ctx.user.id,
           })
           results.push({
             submissionId,
@@ -383,7 +401,7 @@ export const submissionsRouter = router({
             submissionId,
             status: 'error',
             mandalSlug: null,
-            error: err instanceof TRPCError ? err.message : 'Unexpected error',
+            error: describeBatchError(err),
           })
         }
       }
@@ -400,6 +418,27 @@ export const submissionsRouter = router({
 })
 
 /**
+ * Per-item error text for a bulk run.
+ *
+ * A payload that fails buildNewMandalInsert's schema throws a ZodError, not a
+ * TRPCError, so the previous `err instanceof TRPCError ? … : 'Unexpected error'`
+ * collapsed every malformed row to that one useless string — with a
+ * bulk-imported queue that could be 190 identical "Unexpected error" lines and
+ * no way to tell which field was wrong. A field path is safe to surface here:
+ * this is a moderator-only procedure, and the payload is data the moderator is
+ * already looking at in the queue.
+ */
+function describeBatchError(err: unknown): string {
+  if (err instanceof TRPCError) return err.message
+  if (err instanceof ZodError) {
+    const issue = err.issues[0]
+    const path = issue?.path.join('.') || 'payload'
+    return `Invalid stored payload at "${path}": ${issue?.message ?? 'failed validation'}`
+  }
+  return 'Unexpected error'
+}
+
+/**
  * Shared by `review` and `bulkReview` — fetches the submission, applies the
  * approve/reject decision, and returns the outcome. Throws TRPCError for
  * anything that stops a single submission from being reviewable; callers
@@ -408,7 +447,12 @@ export const submissionsRouter = router({
  */
 async function reviewSubmission(
   supabase: ReturnType<typeof createSupabaseServiceRoleClient>,
-  input: { submissionId: string; decision: 'approve' | 'reject'; moderatorNotes?: string }
+  input: {
+    submissionId: string
+    decision: 'approve' | 'reject'
+    moderatorNotes?: string
+    reviewedBy: string
+  }
 ): Promise<{ status: 'approved' | 'rejected'; mandalSlug: string | null }> {
   const { data: submission, error: fetchError } = await supabase
     .from('submissions')
@@ -436,6 +480,7 @@ async function reviewSubmission(
         status: 'rejected',
         moderator_notes: input.moderatorNotes ?? null,
         reviewed_at: new Date().toISOString(),
+        reviewed_by: input.reviewedBy,
       })
       .eq('id', input.submissionId)
 
@@ -472,6 +517,7 @@ async function reviewSubmission(
       p_submission_id: input.submissionId,
       p_mandal: insertRow,
       p_moderator_notes: input.moderatorNotes ?? null,
+      p_reviewed_by: input.reviewedBy,
     })
 
     if (rpcError) {
@@ -517,6 +563,7 @@ async function reviewSubmission(
       p_mandal_id: submission.mandal_id,
       p_patch: patch,
       p_moderator_notes: notes,
+      p_reviewed_by: input.reviewedBy,
     })
 
     if (rpcError) {

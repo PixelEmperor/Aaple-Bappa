@@ -12,10 +12,19 @@ import {
 } from '@/shared/schemas'
 
 const PAGE_SIZE = 50
-// submissions.bulkReview caps a single call at 50 (see shared/schemas.ts) —
-// a larger selection is chunked into calls of this size rather than one big
-// one, since each item is a sequential DB round trip server-side.
-const BULK_CHUNK_SIZE = 50
+/*
+ * submissions.bulkReview accepts up to 50 per call, but this deliberately
+ * sends far fewer.
+ *
+ * Each item costs a few sequential DB round trips server-side, so a 50-item
+ * call is ~150 of them — enough to run past a serverless execution limit. And
+ * a timeout there is not a clean failure: every item's approve RPC is its own
+ * transaction, so the early ones stay committed while the HTTP response is
+ * lost, and the client can only report the whole chunk as failed. Smaller
+ * chunks bound how much work a single timeout can misreport, and give the
+ * moderator visible progress across a long run.
+ */
+const BULK_CHUNK_SIZE = 10
 
 const STATUS_TABS: { value: SubmissionStatus; label: string }[] = [
   { value: 'pending', label: 'Pending' },
@@ -440,6 +449,9 @@ function BulkActionBar({
   onSelectAllOnPage,
   onSelectAllPending,
   onClear,
+  onSummary,
+  progress,
+  onProgress,
 }: {
   status: SubmissionStatus
   selected: Set<string>
@@ -447,19 +459,21 @@ function BulkActionBar({
   onSelectAllOnPage: () => void
   onSelectAllPending: () => Promise<void>
   onClear: () => void
+  onSummary: (summary: BulkSummary) => void
+  progress: { done: number; total: number } | null
+  onProgress: (progress: { done: number; total: number } | null) => void
 }) {
   const utils = trpc.useUtils()
   const [notes, setNotes] = useState('')
-  const [summary, setSummary] = useState<BulkSummary | null>(null)
   const [isSelectingAll, setIsSelectingAll] = useState(false)
   const bulkReview = trpc.submissions.bulkReview.useMutation()
 
   if (status !== 'pending') return null
 
   async function run(decision: 'approve' | 'reject') {
-    setSummary(null)
     const ids = [...selected]
     const outcome: BulkSummary = { approved: 0, rejected: 0, errors: [] }
+    onProgress({ done: 0, total: ids.length })
 
     for (let i = 0; i < ids.length; i += BULK_CHUNK_SIZE) {
       const chunk = ids.slice(i, i + BULK_CHUNK_SIZE)
@@ -472,7 +486,16 @@ function BulkActionBar({
         })
         results = response.results
       } catch (err) {
-        outcome.errors.push(err instanceof Error ? err.message : 'Unexpected error')
+        // A chunk that never answered — most likely a timeout. Some of its
+        // items may well have committed server-side, so this is reported as
+        // an unknown outcome rather than counted as a clean failure; the
+        // refetch below shows the real state.
+        outcome.errors.push(
+          `${chunk.length} item(s) had no response (${
+            err instanceof Error ? err.message : 'unknown error'
+          }) — some may have gone through, check the queue`
+        )
+        onProgress({ done: Math.min(i + chunk.length, ids.length), total: ids.length })
         continue
       }
       for (const result of results) {
@@ -480,9 +503,11 @@ function BulkActionBar({
         else if (result.status === 'rejected') outcome.rejected += 1
         else outcome.errors.push(result.error ?? 'Unknown error')
       }
+      onProgress({ done: Math.min(i + chunk.length, ids.length), total: ids.length })
     }
 
-    setSummary(outcome)
+    onProgress(null)
+    onSummary(outcome)
     onClear()
     await utils.submissions.list.invalidate()
   }
@@ -553,16 +578,9 @@ function BulkActionBar({
         </>
       )}
 
-      {summary && (
-        <p className="text-sm">
-          Done — {summary.approved} approved, {summary.rejected} rejected
-          {summary.errors.length > 0 ? `, ${summary.errors.length} failed` : ''}.
-          {summary.errors.length > 0 && (
-            <span className="mt-1 block text-crit">
-              {summary.errors.slice(0, 5).join(' · ')}
-              {summary.errors.length > 5 ? ` · +${summary.errors.length - 5} more` : ''}
-            </span>
-          )}
+      {progress && (
+        <p role="status" className="text-sm font-semibold">
+          Reviewing {progress.done} of {progress.total}…
         </p>
       )}
     </div>
@@ -573,6 +591,11 @@ export function ModerationQueue() {
   const [status, setStatus] = useState<SubmissionStatus>('pending')
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  // Held here, not in BulkActionBar: that unmounts on a status-tab switch,
+  // which used to throw away the only record of which items in a 190-row run
+  // failed (nothing is persisted server-side).
+  const [summary, setSummary] = useState<BulkSummary | null>(null)
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
   const utils = trpc.useUtils()
   const { data, error, isLoading } = trpc.submissions.list.useQuery({
     status,
@@ -581,6 +604,13 @@ export function ModerationQueue() {
   })
 
   const totalPages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1
+  // Reviewing everything on the last page shrinks `total`, which can leave
+  // `page` past the end: the query returns an empty range and the pager hides
+  // itself (it only renders when totalPages > 1), stranding the moderator on
+  // "Nothing here." with rows still pending behind them. Handled at the two
+  // points that can cause it — a finished bulk run resets to page 1 below,
+  // and this covers the leftover case without a setState-in-effect cascade.
+  const isStranded = Boolean(data && data.items.length === 0 && page > 1)
 
   function changeStatus(next: SubmissionStatus) {
     setStatus(next)
@@ -646,7 +676,49 @@ export function ModerationQueue() {
         onSelectAllOnPage={selectAllOnPage}
         onSelectAllPending={selectAllPending}
         onClear={() => setSelected(new Set())}
+        onSummary={(next) => {
+          setSummary(next)
+          // The queue just changed substantially; whatever page we were on
+          // may no longer exist.
+          setPage(1)
+        }}
+        progress={progress}
+        onProgress={setProgress}
       />
+
+      {summary && (
+        <div className="rounded-md border border-line bg-surface-2 p-3 text-sm">
+          <div className="flex items-start justify-between gap-4">
+            <p>
+              Last bulk run — <b className="font-bold">{summary.approved}</b> approved,{' '}
+              <b className="font-bold">{summary.rejected}</b> rejected
+              {summary.errors.length > 0 ? (
+                <>
+                  , <b className="font-bold text-crit">{summary.errors.length}</b> failed
+                </>
+              ) : (
+                ''
+              )}
+              .
+            </p>
+            <button
+              type="button"
+              onClick={() => setSummary(null)}
+              className="flex-none text-xs font-bold text-ink-faint hover:text-ink"
+            >
+              Dismiss
+            </button>
+          </div>
+          {summary.errors.length > 0 && (
+            <ul className="mt-2 flex list-inside list-disc flex-col gap-0.5 text-xs text-crit">
+              {summary.errors.slice(0, 10).map((message, index) => (
+                <li key={index}>{message}</li>
+              ))}
+              {summary.errors.length > 10 && <li>+{summary.errors.length - 10} more</li>}
+            </ul>
+          )}
+        </div>
+      )}
 
       {isLoading ? (
         <p role="status" className="py-12 text-center text-ink-faint">
@@ -689,6 +761,19 @@ export function ModerationQueue() {
             </div>
           )}
         </>
+      ) : isStranded ? (
+        <div className="flex flex-col items-center gap-3 py-12 text-center">
+          <p role="status" className="text-ink-faint">
+            Nothing on this page — the queue shrank while you were on page {page}.
+          </p>
+          <button
+            type="button"
+            onClick={() => setPage(1)}
+            className="text-sm font-semibold text-accent-deep hover:underline"
+          >
+            Back to the first page
+          </button>
+        </div>
       ) : (
         <p role="status" className="py-12 text-center text-ink-faint">
           Nothing here.

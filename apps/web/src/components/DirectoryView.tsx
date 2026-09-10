@@ -31,8 +31,9 @@ export function DirectoryView({ initialData }: DirectoryViewProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
   const [filters, setFilters] = useState<Filters>(() => filtersFromSearchParams(searchParams))
+  const [page, setPage] = useState(1)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  const queryInput = inputFromFilters(filters, PAGE_SIZE)
+  const queryInput = inputFromFilters(filters, PAGE_SIZE, page)
 
   // initialData only applies when the active query matches the plain listing
   // page.tsx already fetched via ISR — once filters diverge from that,
@@ -48,6 +49,10 @@ export function DirectoryView({ initialData }: DirectoryViewProps) {
   const handleFiltersChange = useCallback(
     (next: Filters) => {
       setFilters(next)
+      // Any filter change re-narrows the result set, so page 3 of the old
+      // filters is meaningless against the new ones (and would often land
+      // past the end, showing an empty grid).
+      setPage(1)
       if (debounceRef.current) clearTimeout(debounceRef.current)
       debounceRef.current = setTimeout(() => {
         const query = queryStringFromFilters(next)
@@ -66,6 +71,7 @@ export function DirectoryView({ initialData }: DirectoryViewProps) {
   }, [])
 
   const items = data?.items ?? []
+  const totalPages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1
   const mapQuery = queryStringFromFilters(filters)
 
   return (
@@ -112,11 +118,40 @@ export function DirectoryView({ initialData }: DirectoryViewProps) {
           {isFetching ? 'Loading…' : 'No mandals match these filters yet.'}
         </p>
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {items.map((mandal) => (
-            <MandalCard key={mandal.id} mandal={mandal} />
-          ))}
-        </div>
+        <>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {items.map((mandal) => (
+              <MandalCard key={mandal.id} mandal={mandal} />
+            ))}
+          </div>
+
+          {totalPages > 1 && (
+            <nav
+              aria-label="Directory pages"
+              className="flex items-center justify-center gap-4 border-t border-line pt-4 text-sm"
+            >
+              <button
+                type="button"
+                onClick={() => setPage((current) => Math.max(1, current - 1))}
+                disabled={page <= 1 || isFetching}
+                className="rounded-md border border-line px-3 py-1.5 font-semibold text-ink-soft hover:border-ink-faint hover:text-ink disabled:opacity-40"
+              >
+                ← Previous
+              </button>
+              <span className="text-ink-faint">
+                Page {page} of {totalPages}
+              </span>
+              <button
+                type="button"
+                onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+                disabled={page >= totalPages || isFetching}
+                className="rounded-md border border-line px-3 py-1.5 font-semibold text-ink-soft hover:border-ink-faint hover:text-ink disabled:opacity-40"
+              >
+                Next →
+              </button>
+            </nav>
+          )}
+        </>
       )}
     </main>
   )

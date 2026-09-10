@@ -153,18 +153,74 @@ Two caveats:
   dynamic rendering and defeat ISR. `src/lib/security-headers.ts` explains the tradeoff.
   If a report-only nonce CSP later proves compatible with static rendering, tighten it.
 
-## 7. Still open (not addressed in this pass)
+## 7. Second pass — audit fixes (migration `0011_fix_tags_and_harden.sql`)
 
+A full-app audit after the first pass found one outage and a set of smaller issues. Apply
+`0011` in the SQL Editor the same way as `0009`/`0010`.
+
+**The outage.** `approve_new_mandal_submission` could not approve any submission whose
+payload had `"tags": null` — which is what `submissions.create` writes whenever a submitter
+picks no tags, and what the mandal-dataset import wrote for all 190 of its rows. 194 of 200
+pending submissions were affected. `p_mandal->'tags'` returns the jsonb *scalar* `null` for
+a JSON null rather than SQL NULL, so `is null` was false and the guard fell through to
+`jsonb_array_elements_text('null')`, which raises `22023 cannot extract elements from a
+scalar`. Confirmed against the live project before and after the fix. The approve functions
+are transactional, so every failure rolled back cleanly — nothing needed repairing.
+
+To verify after applying, approve a previously-failing submission and expect a slug back
+rather than `{"code":"22023"}`.
+
+Also in this pass:
+
+- **`reviewed_by`** added to `submissions` and written by `review`/`bulkReview`, so an
+  approval can be attributed to a moderator and a compromised account's actions scoped.
+- **Range CHECKs** on `mandals.lat`/`lng`/`established_year`, and a CHECK that an
+  `edit_mandal` row has a `mandal_id`. Bounds previously lived only in Zod.
+- **Write grants revoked** on `mandals`/`helplines` for `anon`/`authenticated`, re-granting
+  only `select`. RLS already blocked anon writes (verified live: an anon `PATCH` returns
+  zero rows and leaves data intact), so this removes the reliance on RLS as the sole gate.
+- **The pre-R2 `mandal-photos` bucket is dropped.** It was still `public = true` and anon
+  could list it. Verified empty, with no `mandals` row referencing it.
+
+App-side changes shipping alongside: `Sec-Fetch-Site` as the primary CSRF signal (below),
+`maxDuration = 60` on the tRPC route with a smaller bulk chunk size, one-hop-at-a-time
+redirect validation in `google-maps-link.ts`, `listIds` paginated past `max_rows`, LIKE
+wildcards escaped in search, a `page` cap on `mandals.list`, and directory pagination.
+
+### `NEXT_PUBLIC_SITE_URL` is no longer load-bearing for CSRF
+
+It previously was, and that was a launch trap: behind Cloudflare on a custom domain with the
+var unset, the origin allowlist matched nothing and **every mutation 403'd**, with no failure
+until real traffic arrived. The check now keys off `Sec-Fetch-Site`, which the browser sets,
+page script cannot forge, and no configuration can get wrong; the origin allowlist is the
+fallback for clients that don't send it. Setting `NEXT_PUBLIC_SITE_URL` is still recommended,
+but it is no longer the difference between a working and a broken deploy.
+
+## 8. Still open (not addressed in either pass)
+
+- **Public signup is enabled on the hosted project.** Verified live: `GET /auth/v1/settings`
+  returns `"disable_signup": false` with email enabled, so anyone can mint an
+  `authenticated` token and a row in `auth.users`. This is *not* privilege escalation — both
+  moderator gates require a `moderators` row, and that table is RLS-denied and
+  grant-revoked — but it's free attack surface and unbounded user rows. Turn signup off in
+  Dashboard → Authentication → Sign In / Providers. Nothing in the repo pins this;
+  `supabase/config.toml` governs only the local stack.
 - **No MFA on moderator accounts.** Supabase Auth supports TOTP enrollment; the moderator
   set is tiny and holds full write access to public content, so this is worth doing before
   launch. It needs UI work (enroll + challenge), so it wasn't in scope here.
 - **No login attempt throttling of our own.** Supabase Auth applies its own limits; if the
   moderator surface needs more, it has to be added around `signInWithPassword`.
-- **`Untitled form (Responses).xlsx`** in the repo root holds real submitter names and
-  contact details. It's correctly gitignored (`*.xlsx`), but it's unencrypted on disk and
-  should live somewhere with access control rather than in a working tree.
+- **Rate-limit keys are still partly client-controlled.** `client-ip.ts` now prefers
+  `x-real-ip` (which Vercel overwrites, so it can't be forged) over `cf-connecting-ip`,
+  closing the trivial bypass of POSTing straight to the `*.vercel.app` origin with a chosen
+  `cf-connecting-ip`. `session_id` stays client-minted by design, so the IP key is the real
+  limit. Enabling Vercel deployment protection, so the origin is only reachable through
+  Cloudflare, would close the remainder.
 - **Seed photos vs. R2.** `data-pipeline/import_to_supabase.py` still uploads to the
-  Supabase Storage `mandal-photos` bucket while the app serves from R2, and
-  `next.config.ts`'s `remotePatterns` only allows the R2 host — so any seed-imported photo
-  won't render through `next/image`. Not a security issue, but it will look like one when
-  images silently 400.
+  Supabase Storage `mandal-photos` bucket — which `0011` now drops — while the app serves
+  from R2 and `next.config.ts`'s `remotePatterns` only allows the R2 host. The pipeline
+  needs repointing at R2 before it's next run.
+- **The raw form export** (`Untitled form (Responses).xlsx`) held real submitter names and
+  phone numbers in the repo root. It was gitignored and never committed, and has been moved
+  out of the working tree to `../aaple-bappa-private/`; it still wants somewhere with real
+  access control.

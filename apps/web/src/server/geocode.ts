@@ -1,4 +1,5 @@
 import 'server-only'
+import { internalError } from './errors'
 
 /**
  * Free-text address geocoding for submissions.create (design-plan.md
@@ -36,11 +37,21 @@ export async function geocodeAddress(address: string): Promise<GeocodeResult | n
     // "try dropping a pin instead" message, which is the useful outcome
     // either way.
     if (error instanceof Error && error.name === 'TimeoutError') return null
-    throw error
+    // Anything else went through to the anonymous submitter verbatim before,
+    // including getaddrinfo/DNS detail about our own egress. Log it, return
+    // the generic message.
+    throw internalError(
+      'geocodeAddress fetch',
+      error instanceof Error ? error : { message: 'unknown' }
+    )
   }
 
   if (!response.ok) {
-    throw new Error(`Nominatim geocoding failed: ${response.status}`)
+    // Was `new Error('Nominatim geocoding failed: <status>')`, whose message
+    // tRPC passes straight to the client for a non-TRPCError throw.
+    throw internalError('geocodeAddress upstream', {
+      message: `Nominatim responded ${response.status}`,
+    })
   }
 
   const results = (await response.json()) as Array<{ lat: string; lon: string }>

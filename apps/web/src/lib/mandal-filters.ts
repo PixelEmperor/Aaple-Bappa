@@ -22,7 +22,7 @@ export function filtersFromSearchParams(params: URLSearchParams): Filters {
   }
 }
 
-export function inputFromFilters(filters: Filters, pageSize: number): MandalsListInput {
+export function inputFromFilters(filters: Filters, pageSize: number, page = 1): MandalsListInput {
   const zone = (ZONES as readonly string[]).includes(filters.zone)
     ? (filters.zone as MandalsListInput['zone'])
     : undefined
@@ -35,7 +35,7 @@ export function inputFromFilters(filters: Filters, pageSize: number): MandalsLis
     area: filters.area || undefined,
     zone,
     tags: tags.length > 0 ? tags : undefined,
-    page: 1,
+    page,
     pageSize,
   }
 }

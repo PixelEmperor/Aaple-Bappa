@@ -35,7 +35,10 @@ export function allowedOrigins(env: OriginEnv = process.env): string[] {
     env.NEXT_PUBLIC_SITE_URL,
     env.VERCEL_PROJECT_PRODUCTION_URL && `https://${env.VERCEL_PROJECT_PRODUCTION_URL}`,
     env.VERCEL_URL && `https://${env.VERCEL_URL}`,
-    !env.VERCEL ? 'http://localhost:3000' : undefined,
+    // Off-platform dev only. Also gated on NODE_ENV so a self-hosted
+    // production deploy (no VERCEL var set) doesn't ship localhost in its
+    // own CSRF allowlist.
+    !env.VERCEL && env.NODE_ENV !== 'production' ? 'http://localhost:3000' : undefined,
   ].filter((value): value is string => Boolean(value))
 }
 
@@ -61,4 +64,38 @@ export function isRequestOriginAllowed(
   if (!requestHost) return false
 
   return origins.some((allowed) => hostOf(allowed) === requestHost)
+}
+
+/**
+ * The check the route handler actually calls.
+ *
+ * `Sec-Fetch-Site` is the primary signal and the Origin allowlist is the
+ * fallback, rather than the other way round, because the allowlist depends
+ * on deployment configuration and the header doesn't. With the app behind
+ * Cloudflare on a custom domain, the browser's Origin is that domain, which
+ * neither VERCEL_* var knows — so an unset NEXT_PUBLIC_SITE_URL used to mean
+ * the allowlist matched nothing and *every* mutation 403'd in production,
+ * with no failure until real traffic hit it. Keying off Sec-Fetch-Site
+ * removes that footgun: it's set by the browser, is not settable by page
+ * script (a forbidden header name), and needs no configuration to be right.
+ *
+ * - `same-origin` — the app's own pages calling their own API. Allow.
+ * - `none` — a user-initiated load (typed URL, bookmark). No initiating
+ *   site, so no cross-site attacker. Allow.
+ * - `cross-site` — exactly the CSRF case this guards. Refuse.
+ * - `same-site` — a sibling subdomain, which is not necessarily trusted;
+ *   falls through to the explicit allowlist rather than being waved through.
+ * - absent — a non-browser client, or a browser too old to send it. Falls
+ *   through to the previous Origin-allowlist behaviour.
+ */
+export function isRequestAllowed(
+  request: { origin: string | null; secFetchSite: string | null; method: string },
+  origins: string[] = allowedOrigins()
+): boolean {
+  const { origin, secFetchSite, method } = request
+
+  if (secFetchSite === 'same-origin' || secFetchSite === 'none') return true
+  if (secFetchSite === 'cross-site') return false
+
+  return isRequestOriginAllowed(origin, method, origins)
 }
