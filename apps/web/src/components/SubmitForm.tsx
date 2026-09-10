@@ -257,7 +257,7 @@ export function SubmitForm() {
         <div className="flex flex-col gap-4">
           <label className="flex flex-col gap-1">
             <span className="text-sm font-semibold">
-              Mandal name <span className="text-accent-deep">*</span>
+              Mandal name / Ganpati Pandal name <span className="text-accent-deep">*</span>
             </span>
             <input
               type="text"

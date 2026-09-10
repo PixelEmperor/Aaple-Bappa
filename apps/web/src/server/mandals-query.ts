@@ -13,8 +13,8 @@ export function paginationRange(page: number, pageSize: number): { from: number;
 }
 
 export type MandalFilter =
-  | { type: 'ilike'; column: 'name'; value: string }
-  | { type: 'eq'; column: 'area' | 'zone'; value: string }
+  | { type: 'ilike'; column: 'name' | 'area'; value: string }
+  | { type: 'eq'; column: 'zone'; value: string }
   | { type: 'contains'; column: 'tags'; value: string[] }
 
 /**
@@ -39,7 +39,12 @@ export function buildMandalFilters(input: MandalsListInput): MandalFilter[] {
     filters.push({ type: 'ilike', column: 'name', value: `%${escapeLikePattern(input.search)}%` })
   }
   if (input.area) {
-    filters.push({ type: 'eq', column: 'area', value: input.area })
+    // Was an exact `eq` match against a free-text field the UI presents as a
+    // search box (FilterBar.tsx's own comment even calls it "free text") —
+    // typing "andheri" against a row whose area is "Andheri West" returned
+    // zero matches, since neither the case nor the substring matched
+    // exactly. `ilike` makes it behave like the name search it's styled as.
+    filters.push({ type: 'ilike', column: 'area', value: `%${escapeLikePattern(input.area)}%` })
   }
   if (input.zone) {
     filters.push({ type: 'eq', column: 'zone', value: input.zone })

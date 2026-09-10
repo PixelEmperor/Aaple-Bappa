@@ -8,7 +8,8 @@ import { ThemeToggle } from './ThemeToggle'
 const NAV_LINKS = [
   { href: '/', label: 'Directory' },
   { href: '/map', label: 'Map' },
-  { href: '/helplines', label: 'Helplines' },
+  // Helplines hidden from nav for now — data/page still live at /helplines,
+  // just not linked from anywhere. Re-add here to bring it back.
 ] as const
 
 export function Header() {
@@ -29,7 +30,7 @@ export function Header() {
             width={88}
             height={88}
             priority
-            className="h-11 w-11 flex-none dark:hidden"
+            className="h-14 w-14 flex-none dark:hidden"
           />
           <Image
             src="/aaple-bappa-logo-dark.svg"
@@ -37,7 +38,7 @@ export function Header() {
             width={88}
             height={88}
             priority
-            className="hidden h-11 w-11 flex-none dark:block"
+            className="hidden h-14 w-14 flex-none dark:block"
           />
           <span className="text-[0.625rem] font-semibold tracking-widest text-ink-faint uppercase">
             Mumbai

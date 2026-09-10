@@ -1,5 +1,6 @@
 'use client'
 
+import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -14,6 +15,16 @@ import {
 import { mandalsListInputSchema, type MandalsListOutput } from '@/shared/schemas'
 import { FilterBar } from './FilterBar'
 import { MandalCard } from './MandalCard'
+
+// Leaflet touches `window` at module load time, which crashes during Next's
+// server render of a Client Component — ssr: false is load-bearing here
+// (same reasoning as MapView.tsx/MandalMiniMapIsland.tsx).
+const MapCanvas = dynamic(() => import('./MapCanvas'), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-full items-center justify-center text-ink-faint">Loading map…</div>
+  ),
+})
 
 const DEBOUNCE_MS = 300
 const PAGE_SIZE = 24
@@ -32,6 +43,17 @@ export function DirectoryView({ initialData }: DirectoryViewProps) {
   const searchParams = useSearchParams()
   const [filters, setFilters] = useState<Filters>(() => filtersFromSearchParams(searchParams))
   const [page, setPage] = useState(1)
+  // Every page fetched so far, concatenated — the grid and embedded map grow
+  // on "Show more" rather than being replaced page-to-page.
+  const [accumulated, setAccumulated] = useState<MandalsListOutput['items']>(initialData.items)
+  // Tracks the last page number actually folded into `accumulated`, keyed off
+  // the *server's* echoed `data.page` rather than the local `page` state:
+  // when `page` advances, `data` briefly still holds the previous page's
+  // response (react-query's placeholderData) until the new one lands, so an
+  // effect keyed on `page` would double-append that stale response. Comparing
+  // against `data.page` only fires once, exactly when a genuinely new page's
+  // data arrives.
+  const lastAppliedPage = useRef(initialData.page)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const queryInput = inputFromFilters(filters, PAGE_SIZE, page)
 
@@ -46,13 +68,21 @@ export function DirectoryView({ initialData }: DirectoryViewProps) {
     placeholderData: (previous) => previous,
   })
 
+  useEffect(() => {
+    if (!data || data.page === lastAppliedPage.current) return
+    lastAppliedPage.current = data.page
+    setAccumulated((prev) => (data.page === 1 ? data.items : [...prev, ...data.items]))
+  }, [data])
+
   const handleFiltersChange = useCallback(
     (next: Filters) => {
       setFilters(next)
-      // Any filter change re-narrows the result set, so page 3 of the old
-      // filters is meaningless against the new ones (and would often land
-      // past the end, showing an empty grid).
+      // Any filter change re-narrows the result set, so appending page 2 of
+      // the old filters onto page 1 of the new ones would mix mismatched
+      // results — reset back to a single fresh page.
       setPage(1)
+      lastAppliedPage.current = 0
+      setAccumulated([])
       if (debounceRef.current) clearTimeout(debounceRef.current)
       debounceRef.current = setTimeout(() => {
         const query = queryStringFromFilters(next)
@@ -70,8 +100,8 @@ export function DirectoryView({ initialData }: DirectoryViewProps) {
     }
   }, [])
 
-  const items = data?.items ?? []
-  const totalPages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1
+  const total = data?.total ?? 0
+  const hasMore = accumulated.length < total
   const mapQuery = queryStringFromFilters(filters)
 
   return (
@@ -113,44 +143,48 @@ export function DirectoryView({ initialData }: DirectoryViewProps) {
         </p>
       )}
 
-      {items.length === 0 ? (
+      {accumulated.length === 0 ? (
         <p role="status" className="py-12 text-center text-ink-faint">
           {isFetching ? 'Loading…' : 'No mandals match these filters yet.'}
         </p>
       ) : (
         <>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {items.map((mandal) => (
+            {accumulated.map((mandal) => (
               <MandalCard key={mandal.id} mandal={mandal} />
             ))}
           </div>
 
-          {totalPages > 1 && (
-            <nav
-              aria-label="Directory pages"
-              className="flex items-center justify-center gap-4 border-t border-line pt-4 text-sm"
-            >
+          {hasMore && (
+            <div className="flex justify-center border-t border-line pt-4">
               <button
                 type="button"
-                onClick={() => setPage((current) => Math.max(1, current - 1))}
-                disabled={page <= 1 || isFetching}
-                className="rounded-md border border-line px-3 py-1.5 font-semibold text-ink-soft hover:border-ink-faint hover:text-ink disabled:opacity-40"
+                onClick={() => setPage((current) => current + 1)}
+                disabled={isFetching}
+                className="rounded-md border border-line px-4 py-2 text-sm font-semibold text-ink-soft hover:border-ink-faint hover:text-ink disabled:opacity-40"
               >
-                ← Previous
+                {isFetching ? 'Loading…' : `Show more (${accumulated.length} of ${total})`}
               </button>
-              <span className="text-ink-faint">
-                Page {page} of {totalPages}
-              </span>
-              <button
-                type="button"
-                onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
-                disabled={page >= totalPages || isFetching}
-                className="rounded-md border border-line px-3 py-1.5 font-semibold text-ink-soft hover:border-ink-faint hover:text-ink disabled:opacity-40"
-              >
-                Next →
-              </button>
-            </nav>
+            </div>
           )}
+
+          <div className="flex flex-col gap-2 border-t border-line pt-6">
+            <div className="flex items-center justify-between">
+              <h2 className="font-bold">Where these are</h2>
+              <Link
+                href={mapQuery ? `/map?${mapQuery}` : '/map'}
+                className="text-sm font-semibold text-accent-deep hover:underline"
+              >
+                Open full map →
+              </Link>
+            </div>
+            {/* Plots whatever's been loaded into the grid so far (grows with
+                "Show more") — the full, unpaginated set (up to 300,
+                scope.md's non-functional target) lives at /map, linked above. */}
+            <div className="relative h-[50vh] min-h-[320px] overflow-hidden rounded-lg border border-line shadow-sm">
+              <MapCanvas mandals={accumulated} />
+            </div>
+          </div>
         </>
       )}
     </main>

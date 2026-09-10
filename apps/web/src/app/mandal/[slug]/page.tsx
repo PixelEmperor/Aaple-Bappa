@@ -1,12 +1,10 @@
 import { TRPCError } from '@trpc/server'
 import type { Metadata } from 'next'
-import Image from 'next/image'
 import { notFound } from 'next/navigation'
 import MandalMiniMap from '@/components/MandalMiniMapIsland'
-import { ModakIcon } from '@/components/ModakIcon'
+import { MandalPhotoBanner } from '@/components/MandalPhotoBanner'
 import { ReportMandalIssueForm } from '@/components/ReportMandalIssueForm'
 import { getAllMandalSlugs, getMandalBySlug } from '@/lib/mandals-data'
-import { mandalGradient } from '@/lib/mandal-gradient'
 
 // ISR (design-plan.md Milestone 6). generateStaticParams pre-builds every
 // currently-published mandal at build time; revalidate keeps them fresh
@@ -60,16 +58,7 @@ export default async function MandalDetailPage({ params }: PageProps<'/mandal/[s
       id="main-content"
       className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-8 sm:px-6"
     >
-      <div
-        className="relative flex aspect-21/8 w-full items-center justify-center overflow-hidden rounded-xl shadow-md"
-        style={mandal.photo_url ? undefined : { background: mandalGradient(mandal.id) }}
-      >
-        {mandal.photo_url ? (
-          <Image src={mandal.photo_url} alt={mandal.name} fill className="object-cover" priority />
-        ) : (
-          <ModakIcon detailed className="h-30 w-30 text-white/90 opacity-30" />
-        )}
-      </div>
+      <MandalPhotoBanner mandalId={mandal.id} name={mandal.name} photoUrl={mandal.photo_url} />
 
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1fr_320px]">
         <div className="flex flex-col gap-5">
@@ -128,6 +117,11 @@ export default async function MandalDetailPage({ params }: PageProps<'/mandal/[s
             </div>
           )}
 
+          <p className="text-xs text-ink-faint">
+            Spot something wrong, or have a photo of this mandal? You can{' '}
+            <span className="font-semibold text-ink-soft">upload a picture</span> when you report it
+            below.
+          </p>
           <ReportMandalIssueForm
             mandal={{
               id: mandal.id,
@@ -151,7 +145,21 @@ export default async function MandalDetailPage({ params }: PageProps<'/mandal/[s
               <Fact label="Nearest station">{mandal.nearest_station}</Fact>
             )}
             {mandal.established_year && <Fact label="Established">{mandal.established_year}</Fact>}
-            {mandal.official_contact && <Fact label="Contact">{mandal.official_contact}</Fact>}
+            {/* Contact numbers hidden for now — the imported dataset's
+                official_contact values haven't been verified as belonging to
+                the mandal itself rather than whoever happened to answer a
+                review. Still stored and still editable via a moderator
+                approval; just not shown publicly yet. */}
+            <Fact label="Location">
+              <a
+                href={`https://www.google.com/maps/search/?api=1&query=${mandal.lat},${mandal.lng}`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-accent-deep hover:underline"
+              >
+                Open in Google Maps ↗
+              </a>
+            </Fact>
           </dl>
 
           <div className="aspect-4/3 overflow-hidden rounded-lg border border-line">

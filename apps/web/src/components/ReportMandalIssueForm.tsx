@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { compressImageToDataUrl } from '@/lib/compress-image'
 import { getOrCreateSessionId } from '@/lib/session-id'
 import { trpc } from '@/lib/trpc/react'
@@ -81,11 +81,33 @@ export function ReportMandalIssueForm({ mandal }: { mandal: MandalSummary }) {
   const [form, setForm] = useState<FormState>(INITIAL_STATE)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [submitted, setSubmitted] = useState(false)
+  const [photoPreviewUrl, setPhotoPreviewUrl] = useState<string | null>(null)
   const createSubmission = trpc.submissions.create.useMutation()
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((prev) => ({ ...prev, [key]: value }))
   }
+
+  // The native file input alone gives no feedback that a file actually
+  // attached — this was the reported "upload doesn't seem to work": there was
+  // nothing on screen distinguishing "picked a file" from "picked nothing".
+  // A visible thumbnail of what's about to be sent removes that doubt.
+  function handlePhotoChange(file: File | null) {
+    update('photoFile', file)
+    setPhotoPreviewUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev)
+      return file ? URL.createObjectURL(file) : null
+    })
+  }
+
+  useEffect(() => {
+    return () => {
+      if (photoPreviewUrl) URL.revokeObjectURL(photoPreviewUrl)
+    }
+    // Only cleans up on unmount — handlePhotoChange revokes the previous URL
+    // itself whenever a new one replaces it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   async function handleSubmit() {
     setErrorMessage(null)
@@ -158,6 +180,45 @@ export function ReportMandalIssueForm({ mandal }: { mandal: MandalSummary }) {
           className={inputClass}
           placeholder="e.g. the timings are wrong, this mandal moved, this listing is a duplicate…"
         />
+      </label>
+
+      {/* Always visible, not tucked behind "Suggest specific corrections" —
+          a photo is the single most useful thing a reporter can attach, and
+          hiding it behind an extra click meant most people never saw it. */}
+      <label className="flex flex-col gap-1">
+        <span className="text-sm font-semibold">
+          Have a photo of the mandal? You can upload one here (optional)
+        </span>
+        {mandal.photo_url && !photoPreviewUrl && (
+          <div className="flex items-center gap-2 text-xs text-ink-faint">
+            <span>Current photo:</span>
+            {/* eslint-disable-next-line @next/next/no-img-element -- small preview, not worth next/image's remote-pattern config for a photo about to be replaced */}
+            <img
+              src={mandal.photo_url}
+              alt="Current"
+              className="h-16 w-24 rounded-md border border-line object-cover"
+            />
+          </div>
+        )}
+        <input
+          type="file"
+          accept="image/jpeg,image/png,image/webp"
+          onChange={(e) => handlePhotoChange(e.target.files?.[0] ?? null)}
+          className={inputClass}
+        />
+        {photoPreviewUrl && form.photoFile && (
+          <div className="flex items-center gap-2 rounded-md border border-good/40 bg-good-tint p-2 text-xs">
+            {/* eslint-disable-next-line @next/next/no-img-element -- a local object: URL preview, next/image can't optimize it anyway */}
+            <img
+              src={photoPreviewUrl}
+              alt="Selected"
+              className="h-16 w-24 rounded-md border border-line object-cover"
+            />
+            <span className="text-good">
+              Attached: {form.photoFile.name} — this will replace the current photo once approved.
+            </span>
+          </div>
+        )}
       </label>
 
       {!showCorrections ? (
@@ -272,25 +333,6 @@ export function ReportMandalIssueForm({ mandal }: { mandal: MandalSummary }) {
               onChange={(e) => update('hidePublicly', e.target.checked)}
             />
             This shouldn&apos;t be listed publicly (e.g. a private/society Ganpati)
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs font-semibold text-ink-faint">
-              Replace the photo{mandal.photo_url ? '' : ' (none on file yet)'}
-            </span>
-            {mandal.photo_url && (
-              // eslint-disable-next-line @next/next/no-img-element -- small "current photo" preview, not worth next/image's remote-pattern config for a photo about to be replaced
-              <img
-                src={mandal.photo_url}
-                alt="Current"
-                className="h-20 w-32 rounded-md border border-line object-cover"
-              />
-            )}
-            <input
-              type="file"
-              accept="image/jpeg,image/png,image/webp"
-              onChange={(e) => update('photoFile', e.target.files?.[0] ?? null)}
-              className={inputClass}
-            />
           </label>
         </div>
       )}

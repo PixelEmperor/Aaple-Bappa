@@ -23,7 +23,16 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: LayoutProps<'/'>) {
   return (
-    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
+    <html
+      lang="en"
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      // The theme script below deliberately sets data-theme on this element
+      // before hydration, from a stored preference the server has no way to
+      // know — a real, intentional mismatch, not a bug to fix. This only
+      // suppresses the warning for this element's own attributes, not its
+      // children, so an actual hydration mismatch elsewhere still surfaces.
+      suppressHydrationWarning
+    >
       <head>
         {/* Blocking, pre-hydration: applies a stored theme choice before
             first paint so toggling never flashes the previous theme

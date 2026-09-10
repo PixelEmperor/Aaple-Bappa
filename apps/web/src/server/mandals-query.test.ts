@@ -51,10 +51,20 @@ describe('buildMandalFilters', () => {
     ])
   })
 
-  it('builds eq filters for area and zone', () => {
+  it('builds a partial, case-insensitive filter for area, and an exact one for zone', () => {
+    // area is free text styled as a search box (FilterBar.tsx) — an exact
+    // match meant typing "andheri" against a row whose area is "Andheri
+    // West" returned nothing. zone is a fixed dropdown (ZONES), so exact
+    // stays correct there.
     expect(buildMandalFilters(input({ area: 'Lalbaug', zone: 'Central Mumbai' }))).toEqual([
-      { type: 'eq', column: 'area', value: 'Lalbaug' },
+      { type: 'ilike', column: 'area', value: '%Lalbaug%' },
       { type: 'eq', column: 'zone', value: 'Central Mumbai' },
+    ])
+  })
+
+  it('escapes LIKE wildcards in the area filter too', () => {
+    expect(buildMandalFilters(input({ area: 'a_b' }))).toEqual([
+      { type: 'ilike', column: 'area', value: '%a\\_b%' },
     ])
   })
 
