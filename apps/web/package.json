@@ -23,6 +23,7 @@
     "@trpc/client": "^11.18.0",
     "@trpc/react-query": "^11.18.0",
     "@trpc/server": "^11.18.0",
+    "@vercel/analytics": "^2.0.1",
     "fuse.js": "7.5.0",
     "leaflet": "1.9.4",
     "next": "16.3.3",

@@ -1,3 +1,4 @@
+import { Analytics } from '@vercel/analytics/next'
 import type { Metadata } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 import './globals.css'
@@ -62,6 +63,9 @@ export default function RootLayout({ children }: LayoutProps<'/'>) {
           <Header />
           {children}
         </Providers>
+        {/* Vercel's own pageview counter — separate from PostHog, no shared
+            config; a no-op in local dev and any deploy Vercel doesn't own. */}
+        <Analytics />
       </body>
     </html>
   )
