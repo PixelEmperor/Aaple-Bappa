@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { extractLatLngFromGoogleMapsUrl } from './google-maps-url'
+import {
+  extractLatLngFromGoogleMapsUrl,
+  extractPlaceNameFromGoogleMapsUrl,
+} from './google-maps-url'
 
 describe('extractLatLngFromGoogleMapsUrl', () => {
   it('extracts coordinates from a place-page !3d!4d pattern', () => {
@@ -54,5 +57,34 @@ describe('extractLatLngFromGoogleMapsUrl', () => {
 
   it('returns null for a non-Maps URL', () => {
     expect(extractLatLngFromGoogleMapsUrl('https://example.com/not-a-maps-link')).toBeNull()
+  })
+})
+
+describe('extractPlaceNameFromGoogleMapsUrl', () => {
+  it('extracts and decodes the place name from a real mobile-share resolved URL', () => {
+    // A genuine report: this URL resolves with no @lat,lng or !3d!4d
+    // anywhere — Google's mobile-app share format identifies the place by
+    // name + feature id (!1s<hex>:<hex>) instead.
+    const url =
+      'https://www.google.com/maps/place/Altamount+Road+Cha+Raja,+Eastman+House,+SK+Barodawala+Marg,+Tardeo,+Mumbai,+Maharashtra+400026/data=!4m2!3m1!1s0x3be7cf007a0e071d:0x76ba3553534a730d!18m1!1e1?utm_source=mstt_1'
+    expect(extractPlaceNameFromGoogleMapsUrl(url)).toBe(
+      'Altamount Road Cha Raja, Eastman House, SK Barodawala Marg, Tardeo, Mumbai, Maharashtra 400026'
+    )
+  })
+
+  it('stops at a trailing query string', () => {
+    expect(
+      extractPlaceNameFromGoogleMapsUrl('https://www.google.com/maps/place/Lalbaugcha+Raja?hl=en')
+    ).toBe('Lalbaugcha Raja')
+  })
+
+  it('returns null when the URL has no /maps/place/ segment', () => {
+    expect(
+      extractPlaceNameFromGoogleMapsUrl('https://www.google.com/maps/@19.076,72.8777,15z')
+    ).toBeNull()
+  })
+
+  it('returns null rather than throwing on malformed percent-encoding', () => {
+    expect(extractPlaceNameFromGoogleMapsUrl('https://www.google.com/maps/place/100%/x')).toBeNull()
   })
 })

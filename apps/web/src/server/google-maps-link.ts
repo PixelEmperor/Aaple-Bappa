@@ -1,5 +1,9 @@
 import 'server-only'
-import { extractLatLngFromGoogleMapsUrl } from '@/shared/google-maps-url'
+import {
+  extractLatLngFromGoogleMapsUrl,
+  extractPlaceNameFromGoogleMapsUrl,
+} from '@/shared/google-maps-url'
+import { geocodeAddress } from './geocode'
 
 // Only Google's own domains — this list gates which URLs the server will
 // ever fetch. Without it, a submitter could paste an arbitrary URL (e.g.
@@ -35,6 +39,48 @@ const FETCH_TIMEOUT_MS = 5000
 // hop, maybe two; three is slack, not a budget to spend.
 const MAX_REDIRECTS = 3
 
+// Caps how many times resolveViaPlaceName retries Nominatim on one request —
+// see that function for why more than one attempt is needed at all.
+const MAX_PLACE_NAME_GEOCODE_ATTEMPTS = 4
+
+/**
+ * Last resort once no coordinates can be found anywhere in a resolved URL:
+ * geocode the place name Google embedded in the path instead of giving up.
+ * Confirmed against a real report — a mobile-app share link resolved to
+ * .../maps/place/Altamount+Road+Cha+Raja,+Eastman+House,+SK+Barodawala+Marg,+.../data=!4m2!3m1!1s0x...!18m1!1e1
+ * with no @lat,lng or !3d!4d anywhere, which extractLatLngFromGoogleMapsUrl
+ * has no way to read coordinates out of — there simply aren't any.
+ *
+ * A single geocode attempt on the full string usually fails outright:
+ * Nominatim is OpenStreetMap data, which has essentially no coverage of a
+ * small seasonal community mandal or a building name — confirmed live
+ * against the address above, which drew a blank. Google's own string is
+ * ordered most-specific-first ("<mandal name>, <building>, <street>, <area>,
+ * <city>, <state> <pincode>"), so progressively dropping the leading segment
+ * and retrying converges on a prefix OSM does recognize — a street or area —
+ * same string, verified live: the 4th attempt ("Tardeo, Mumbai, Maharashtra
+ * 400026") resolved correctly while the first three didn't. The result is
+ * necessarily an approximation (the actual street/area, not the exact
+ * building), no worse than a submitter typing a rough address instead of
+ * dropping a pin — a moderator can still refine the pin before approving.
+ */
+async function resolveViaPlaceName(url: string): Promise<{ lat: number; lng: number } | null> {
+  const placeName = extractPlaceNameFromGoogleMapsUrl(url)
+  if (!placeName) return null
+
+  const segments = placeName
+    .split(',')
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+  const attempts = Math.min(segments.length, MAX_PLACE_NAME_GEOCODE_ATTEMPTS)
+
+  for (let i = 0; i < attempts; i++) {
+    const coords = await geocodeAddress(segments.slice(i).join(', '))
+    if (coords) return coords
+  }
+  return null
+}
+
 function parseAllowedGoogleUrl(url: string): URL | null {
   let parsed: URL
   try {
@@ -61,7 +107,11 @@ export async function resolveGoogleMapsLink(
   const direct = extractLatLngFromGoogleMapsUrl(parsed.toString())
   if (direct) return direct
 
-  if (!SHORT_LINK_HOSTS.has(parsed.hostname)) return null
+  if (!SHORT_LINK_HOSTS.has(parsed.hostname)) {
+    // A full (non-shortened) Google Maps URL with no coordinates anywhere in
+    // it — geocode the place name it does carry rather than giving up.
+    return resolveViaPlaceName(parsed.toString())
+  }
 
   let current = parsed
 
@@ -80,8 +130,11 @@ export async function resolveGoogleMapsLink(
 
     const location = response.headers.get('location')
     if (!location) {
-      // End of the chain. Coordinates may be in the URL we landed on.
-      return extractLatLngFromGoogleMapsUrl(current.toString())
+      // End of the chain. Coordinates may be in the URL we landed on; if not,
+      // fall back to geocoding whatever place name it does carry.
+      const coords = extractLatLngFromGoogleMapsUrl(current.toString())
+      if (coords) return coords
+      return resolveViaPlaceName(current.toString())
     }
 
     // Relative Locations are legal, so resolve against the current URL before

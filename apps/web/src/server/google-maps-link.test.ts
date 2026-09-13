@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { geocodeAddress } from './geocode'
 import { resolveGoogleMapsLink } from './google-maps-link'
+
+vi.mock('./geocode', () => ({
+  geocodeAddress: vi.fn(),
+}))
+
+const geocodeAddressMock = vi.mocked(geocodeAddress)
 
 /**
  * Redirects are followed manually (one fetch per hop, each Location
@@ -18,6 +25,7 @@ function finalResponse() {
 describe('resolveGoogleMapsLink', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
+    geocodeAddressMock.mockReset()
   })
 
   it('resolves a full google.com/maps URL without any network call', async () => {
@@ -123,5 +131,75 @@ describe('resolveGoogleMapsLink', () => {
 
   it('returns null for an unparseable URL', async () => {
     expect(await resolveGoogleMapsLink('not a url')).toBeNull()
+  })
+
+  /**
+   * The real report this fallback exists for: a mobile-app share link that
+   * resolves to a place page with no @lat,lng or !3d!4d anywhere — Google's
+   * mobile format identifies the place by name + feature id instead. Without
+   * the place-name-geocode fallback this returned null outright, surfacing
+   * as "Couldn't find a location in that link" for a link that's completely
+   * valid, just in a format extractLatLngFromGoogleMapsUrl can't read
+   * coordinates out of because there aren't any to read.
+   */
+  const REAL_MOBILE_SHARE_PLACE_URL =
+    'https://www.google.com/maps/place/Altamount+Road+Cha+Raja,+Eastman+House,+SK+Barodawala+Marg,+Tardeo,+Mumbai,+Maharashtra+400026/data=!4m2!3m1!1s0x3be7cf007a0e071d:0x76ba3553534a730d!18m1!1e1?utm_source=mstt_1'
+
+  it('falls back to geocoding the place name when a short link resolves to a place page with no coordinates', async () => {
+    // One redirect hop (maps.app.goo.gl -> the place URL, confirmed live),
+    // then a terminal 200 with no further Location when that place URL
+    // itself is fetched.
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(redirectTo(REAL_MOBILE_SHARE_PLACE_URL))
+        .mockResolvedValue(finalResponse())
+    )
+    // Confirmed live against Nominatim: the full string and the next two
+    // progressively-shorter attempts all draw a blank (OSM has no idea what
+    // "Eastman House" or this mandal is) — only the 4th, most-generic
+    // attempt succeeds.
+    geocodeAddressMock
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ lat: 18.9722351, lng: 72.8203423 })
+
+    const result = await resolveGoogleMapsLink('https://maps.app.goo.gl/J1Se6o5qpQVjuFCH6')
+
+    expect(result).toEqual({ lat: 18.9722351, lng: 72.8203423 })
+    expect(geocodeAddressMock).toHaveBeenNthCalledWith(
+      1,
+      'Altamount Road Cha Raja, Eastman House, SK Barodawala Marg, Tardeo, Mumbai, Maharashtra 400026'
+    )
+    expect(geocodeAddressMock).toHaveBeenNthCalledWith(4, 'Tardeo, Mumbai, Maharashtra 400026')
+  })
+
+  it('applies the same place-name fallback to a full URL pasted directly, not just a short link', async () => {
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    geocodeAddressMock.mockResolvedValueOnce({ lat: 18.97, lng: 72.82 })
+
+    const result = await resolveGoogleMapsLink(REAL_MOBILE_SHARE_PLACE_URL)
+
+    expect(result).toEqual({ lat: 18.97, lng: 72.82 })
+    // No redirect to follow — a full URL never needs the network fetch loop.
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('caps geocode attempts and returns null if every one fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(redirectTo(REAL_MOBILE_SHARE_PLACE_URL))
+        .mockResolvedValue(finalResponse())
+    )
+    geocodeAddressMock.mockResolvedValue(null)
+
+    expect(await resolveGoogleMapsLink('https://maps.app.goo.gl/J1Se6o5qpQVjuFCH6')).toBeNull()
+    // 6 comma-separated segments in the fixture, capped at 4 attempts.
+    expect(geocodeAddressMock).toHaveBeenCalledTimes(4)
   })
 })

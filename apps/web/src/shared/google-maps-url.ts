@@ -31,3 +31,24 @@ function toCoords(latStr: string, lngStr: string): { lat: number; lng: number } 
   if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return null
   return { lat, lng }
 }
+
+/**
+ * Pulls the human-readable place/address Google embeds in a
+ * .../maps/place/<name>/... URL path segment — the fallback
+ * server/google-maps-link.ts geocodes via Nominatim when a URL has no
+ * coordinates anywhere in it at all. This is the common case for a link
+ * shared from the Google Maps *mobile app*: it identifies the place by name
+ * plus an opaque feature id (`!1s<hex>:<hex>`), never an `@lat,lng` or
+ * `!3d!4d` — both of which the maps web UI includes far more often.
+ */
+export function extractPlaceNameFromGoogleMapsUrl(url: string): string | null {
+  const match = url.match(/\/maps\/place\/([^/?]+)/)
+  if (!match) return null
+  try {
+    const name = decodeURIComponent(match[1].replace(/\+/g, ' ')).trim()
+    return name.length > 0 ? name : null
+  } catch {
+    // Malformed percent-encoding (decodeURIComponent throws on e.g. a bare "%").
+    return null
+  }
+}
