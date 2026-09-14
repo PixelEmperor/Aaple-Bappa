@@ -40,8 +40,13 @@ const FETCH_TIMEOUT_MS = 5000
 const MAX_REDIRECTS = 3
 
 // Caps how many times resolveViaPlaceName retries Nominatim on one request —
-// see that function for why more than one attempt is needed at all.
-const MAX_PLACE_NAME_GEOCODE_ATTEMPTS = 4
+// see that function for why more than one attempt is needed at all. 4 was
+// tuned against a 6-segment address (Tardeo, this file's other fixture)
+// where the 4th, most-generic attempt succeeded; a real Kalyan report with 8
+// segments needed the 6th ("Mumbai, Kalyan, Maharashtra 421201") — the first
+// 5, all containing a building/road/plus-code, drew a blank. Confirmed live
+// against Nominatim for both addresses.
+const MAX_PLACE_NAME_GEOCODE_ATTEMPTS = 8
 
 /**
  * Last resort once no coordinates can be found anywhere in a resolved URL:

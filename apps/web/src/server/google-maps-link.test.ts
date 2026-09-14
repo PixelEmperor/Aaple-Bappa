@@ -199,7 +199,36 @@ describe('resolveGoogleMapsLink', () => {
     geocodeAddressMock.mockResolvedValue(null)
 
     expect(await resolveGoogleMapsLink('https://maps.app.goo.gl/J1Se6o5qpQVjuFCH6')).toBeNull()
-    // 6 comma-separated segments in the fixture, capped at 4 attempts.
-    expect(geocodeAddressMock).toHaveBeenCalledTimes(4)
+    // 6 comma-separated segments in the fixture; the cap (8) never binds here.
+    expect(geocodeAddressMock).toHaveBeenCalledTimes(6)
+  })
+
+  /**
+   * Real report: this Kalyan share link resolves to a place page with a Plus
+   * Code + building/road name and 8 comma segments — one more than the
+   * Tardeo fixture above needed. Confirmed live against Nominatim: the first
+   * 5 attempts (anything still carrying the plus code, mandal, road, or
+   * colony name) all draw a blank; only the 6th, "Mumbai, Kalyan, Maharashtra
+   * 421201", resolves. The old cap of 4 gave up one segment short of that.
+   */
+  const REAL_KALYAN_SHARE_PLACE_URL =
+    'https://www.google.com/maps/place/63GW%2B7MX+Thakurlicha+Maharaja+Ganeshotsav+Mandal,+SKS+Marg,+Thakurli,+Chandrakant+Dhuru+Wadi,+Railway+Colony,+Mumbai,+Kalyan,+Maharashtra+421201/data=!4m2!3m1!1s0x3be795f232f90685:0x4ad99cf374b66c98!18m1!1e1'
+
+  it('reaches the 6th, most-generic attempt for an 8-segment address', async () => {
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    geocodeAddressMock
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ lat: 19.2396742, lng: 73.1366482 })
+
+    const result = await resolveGoogleMapsLink(REAL_KALYAN_SHARE_PLACE_URL)
+
+    expect(result).toEqual({ lat: 19.2396742, lng: 73.1366482 })
+    expect(geocodeAddressMock).toHaveBeenCalledTimes(6)
+    expect(geocodeAddressMock).toHaveBeenNthCalledWith(6, 'Mumbai, Kalyan, Maharashtra 421201')
   })
 })

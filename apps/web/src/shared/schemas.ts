@@ -67,6 +67,8 @@ export const photoUrlSchema = z
     }
   }, 'Photo URL must be an absolute https URL')
 
+const KNOWN_TAGS: ReadonlySet<string> = new Set(TAGS)
+
 export const mandalSchema = z.object({
   id: z.uuid(),
   name: z.string(),
@@ -79,7 +81,17 @@ export const mandalSchema = z.object({
   description: z.string().nullable(),
   history: z.string().nullable(),
   nearest_station: z.string().nullable(),
-  tags: z.array(z.enum(TAGS)).nullable(),
+  // Read-side tolerance: `z.enum(TAGS)` per element would fail the whole
+  // `mandals.list` output parse over a single legacy row, the same failure
+  // mode `photoUrlSchema`'s comment above calls out for `photo_url`. The
+  // data-pipeline import writes tags straight from a CSV column with no
+  // enum check (data-pipeline/import_to_supabase.py), so a row can carry a
+  // tag outside the current TAGS list — drop those instead of rejecting
+  // the row.
+  tags: z
+    .array(z.string())
+    .nullable()
+    .transform((tags) => tags?.filter((tag) => KNOWN_TAGS.has(tag)) as (typeof TAGS)[number][] | null | undefined ?? null),
   timings: z.string().nullable(),
   official_contact: z.string().nullable(),
   photo_url: z.string().nullable(),
