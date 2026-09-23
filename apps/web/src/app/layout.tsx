@@ -3,6 +3,7 @@ import type { Metadata } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 import './globals.css'
 import { Header } from '@/components/Header'
+import { SustainabilityReminderModal } from '@/components/SustainabilityReminderModal'
 import { siteUrl } from '@/lib/site-url'
 import { themeInitScript } from '@/lib/theme'
 import { Providers } from './providers'
@@ -62,6 +63,7 @@ export default function RootLayout({ children }: LayoutProps<'/'>) {
         <Providers>
           <Header />
           {children}
+          <SustainabilityReminderModal />
         </Providers>
         {/* Vercel's own pageview counter — separate from PostHog, no shared
             config; a no-op in local dev and any deploy Vercel doesn't own. */}
