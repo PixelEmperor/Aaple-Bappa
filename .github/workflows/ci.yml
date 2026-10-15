@@ -33,7 +33,7 @@ jobs:
           # and the actual deploy.
           version: 11.13.1
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
